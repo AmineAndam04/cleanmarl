@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import time
 from torch.utils.tensorboard import SummaryWriter
 # * Compute the loss function
-# TODO: seed, device, optimizer, support multiple environments, logger
+# TODO: seed, device, logger every k steps, log reward variance, add grad_clipping
 
 @dataclass
 class Args:
@@ -22,11 +22,11 @@ class Args:
     """ Env family when using pz"""
     weight_sharing: bool = True 
     """ Whether the agents will share the same network weights  """
-    buffer_size: int = 1000
+    buffer_size: int = 10000
     """ The size of the replay buffer"""
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
-    learning_starts: int = 1000 
+    learning_starts: int = 10000 
     """ Number of env steps to initialize the replay buffer"""
     train_freq: int = 4
     """ Training frequency, relative to total_timesteps"""
@@ -50,6 +50,10 @@ class Args:
     """ Number of layers"""
     target_network_update_freq: int = 100
     """ Frequency of updating target network"""
+    log_every: int = 1000
+    """ Logging steps"""
+    grad_clip: float =  10
+    """grad clipping"""
     polyak: float = 1
     """polyak coefficient when using polyak averaging for target network update"""
     eval_steps: int = 1000
@@ -119,7 +123,10 @@ def environment(env_type, env_name, env_family,kwargs):
     if env_type == 'pz':
         env = PettingZooWrapper(family = env_family, env_name = env_name,**kwargs)
     return env
-
+def norm_d(grads, d):
+    norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
+    total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
+    return total_norm_d
 def soft_update(target_net, utility_net, polyak):
         for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
             target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
@@ -168,6 +175,11 @@ if __name__ == "__main__":
     obs,_ = env.reset()
     ep_reward = 0
     ep_length = 0
+    ep_rewards = []
+    ep_lengths = []
+    losses = []
+    q_vals = []
+    gradients = []
     run_name = f"{args.env_type}__{args.env_name}__{int(time.time())}"
     writer = SummaryWriter(f"runs/{run_name}")
     for step in range(args.total_timesteps):
@@ -192,10 +204,16 @@ if __name__ == "__main__":
         rb.store(obs, actions,reward,done,next_obs)
         if done or truncated:
             obs, _ = env.reset()
-            writer.add_scalar("rollout/ep_reward", ep_reward, step)
-            writer.add_scalar("rollout/ep_length",ep_length,step)
+            ep_rewards.append(ep_reward)
+            ep_lengths.append(ep_length)
             ep_reward = 0
             ep_length = 0
+        if step % args.log_every == 0:
+                writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
+                writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+                ep_rewards = []
+                ep_lengths = []
+               
         if step > args.learning_starts:
             if step % args.train_freq: 
                 batch_obs,batch_action,batch_reward,batch_next_obs,batch_done = rb.sample(args.batch_size)
@@ -208,16 +226,29 @@ if __name__ == "__main__":
                 loss = F.mse_loss(targets,vqn_q_values)
                 optimizer.zero_grad()
                 loss.backward()
+                grads = [p.grad for p in agents_utility_network.parameters() ]
+                grad_norm_2 = norm_d(grads,2)
+                gradients.append(grad_norm_2)
+                torch.nn.utils.clip_grad_norm_(agents_utility_network.parameters(), max_norm=args.grad_clip, norm_type=2)
                 optimizer.step()
-                writer.add_scalar("train/loss", loss.item(), step)
-                writer.add_scalar("train/q_values", vqn_q_values.mean().item(), step)
+                losses.append(loss.item())
+                q_vals.append(vqn_q_values.mean().item())
                 if step % args.target_network_update_freq:
                     soft_update(
                         target_net=agents_target_network,
                         utility_net=agents_utility_network,
                         polyak=args.polyak
                     )
+            if step % args.log_every == 0:
+                writer.add_scalar("train/loss", np.mean(losses), step)
+                writer.add_scalar("train/q_values", np.mean(q_vals), step)
+                writer.add_scalar("train/grads", np.mean(gradients), step)
+                losses = []
+                q_vals = []
+                gradients = []
         obs = next_obs 
+        
+
         if step % args.eval_steps == 0:
             eval_obs,_ = eval_env.reset()
             eval_ep = 0
@@ -241,6 +272,7 @@ if __name__ == "__main__":
                     eval_ep +=1
                 eval_obs = next_obs_
             writer.add_scalar("eval/ep_reward",np.mean(eval_ep_reward), step)
+            writer.add_scalar("eval/std_ep_reward",np.std(eval_ep_reward), step)
             writer.add_scalar("eval/ep_length",np.mean(eval_ep_length), step)
 
         
