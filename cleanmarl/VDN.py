@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import time
 from torch.utils.tensorboard import SummaryWriter
 # * Compute the loss function
-# TODO: seed, device, logger every k steps, log reward variance, add grad_clipping
+# TODO: seed, device, better title for the logger 
 
 @dataclass
 class Args:
@@ -22,21 +22,23 @@ class Args:
     """ Env family when using pz"""
     weight_sharing: bool = True 
     """ Whether the agents will share the same network weights  """
-    buffer_size: int = 10000
+    buffer_size: int = 500000
     """ The size of the replay buffer"""
     total_timesteps: int = 1000000
+    gamma: float = 0.95
+    """ Discount factor"""
     """ Total steps in the environment during training"""
     learning_starts: int = 10000 
     """ Number of env steps to initialize the replay buffer"""
-    train_freq: int = 4
+    train_freq: int = 5
     """ Training frequency, relative to total_timesteps"""
     optimizer: str = "Adam"
     """ The optimizer"""
     sep_optimizers: bool = False
     """If true, and when weights are not shared among agents, separate optimizers will be used (different adam states ...)"""
-    learning_rate: float = 0.001
+    learning_rate: float =  0.00001
     """ Learning rate"""
-    batch_size: int = 32
+    batch_size: int = 128
     """Batch size"""
     start_e: float = 1
     """the starting epsilon for exploration"""
@@ -44,24 +46,26 @@ class Args:
     """the ending epsilon for exploration"""
     exploration_fraction: float = 0.5
     """the fraction of `total-timesteps` it takes from start-e to go end-e"""
-    hidden_dim: int = 64
+    hidden_dim: int = 265
     """ Hidden dimension"""
     num_layers: int = 2
     """ Number of layers"""
-    target_network_update_freq: int = 100
+    target_network_update_freq: int = 200
     """ Frequency of updating target network"""
     log_every: int = 1000
     """ Logging steps"""
-    grad_clip: float =  10
+    grad_clip: float =  4
     """grad clipping"""
     polyak: float = 1
     """polyak coefficient when using polyak averaging for target network update"""
-    eval_steps: int = 1000
+    eval_steps: int = 5000
     """ Evaluate the policy each eval_steps steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
     device: str ="cpu"
     """ Device (cpu, gpu, mps)"""
+    normalize_reward: bool = True
+    """ Normalize the rewards"""
 
     
 
@@ -74,7 +78,7 @@ class Qnetwrok(nn.Module):
             self.layers.append(
                 nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
             )
-        self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim),))
+        self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
         
 
     
@@ -104,13 +108,18 @@ class ReplayBuffer:
         self.done[self.pos] = done
         self.pos = (self.pos + 1) % self.buffer_size
         self.size = min(self.size + 1, self.buffer_size)
-    def sample(self,batch_size):
+    def sample(self,batch_size,normalize_reward= False):
         indices = np.random.randint(0, self.size, size=batch_size)
-        
+        if normalize_reward:
+            mu = np.mean(self.reward)
+            std = np.std(self.reward)
+            rewards = (self.reward[indices] - mu) /(std + 1e-6)
+        else :
+            rewards  = self.reward[indices]
         return (
             torch.from_numpy(self.obs[indices]).float(),
             torch.from_numpy(self.action[indices]).long(),
-            torch.from_numpy(self.reward[indices]).float(),
+            torch.from_numpy(rewards).float(),
             torch.from_numpy(self.next_obs[indices]).float(),
             torch.from_numpy(self.done[indices]).float()
         )
@@ -159,7 +168,7 @@ if __name__ == "__main__":
     optimizer = getattr(optim, args.optimizer) # get which optimizer to use from args
     ### There is two approaches especially when the weights are not shared: 
     ###one single optimizer (meaning shared optimizer states among the agents) or each one to have his own optimizer
-    optimizer = optimizer(agents_target_network.parameters(),lr = args.learning_rate)
+    optimizer = optimizer(agents_utility_network.parameters(),lr = args.learning_rate)
 
     if not args.weight_sharing and args.sep_optimizers:
         optimizers = [
@@ -209,18 +218,19 @@ if __name__ == "__main__":
             ep_reward = 0
             ep_length = 0
         if step % args.log_every == 0:
-                writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
-                writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
-                ep_rewards = []
-                ep_lengths = []
+                if len(ep_rewards) > 0: 
+                    writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
+                    writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+                    ep_rewards = []
+                    ep_lengths = []
                
         if step > args.learning_starts:
             if step % args.train_freq: 
-                batch_obs,batch_action,batch_reward,batch_next_obs,batch_done = rb.sample(args.batch_size)
+                batch_obs,batch_action,batch_reward,batch_next_obs,batch_done = rb.sample(args.batch_size,normalize_reward= args.normalize_reward)
                 with torch.no_grad():
                     q_next_max,_ = agents_target_network(batch_next_obs).max(dim=-1)
                     vdn_q_max = q_next_max.sum(dim=-1)
-                    targets = batch_reward.squeeze() + (1-batch_done.squeeze())*(torch.sum(q_next_max, dim=-1))
+                    targets = batch_reward.squeeze() + args.gamma * (1-batch_done.squeeze())*(torch.sum(q_next_max, dim=-1))
                 q_values = torch.gather(agents_utility_network(batch_obs),dim=-1, index=batch_action.unsqueeze(-1)).squeeze()
                 vqn_q_values = q_values.sum(dim = -1)
                 loss = F.mse_loss(targets,vqn_q_values)
