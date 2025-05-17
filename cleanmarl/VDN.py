@@ -8,9 +8,11 @@ import random
 from env.pettingzoo_wrapper import PettingZooWrapper
 import torch.nn.functional as F
 import time
+import datetime
 from torch.utils.tensorboard import SummaryWriter
 # * Compute the loss function
 # TODO: seed, device, better title for the logger 
+
 
 @dataclass
 class Args:
@@ -189,8 +191,13 @@ if __name__ == "__main__":
     losses = []
     q_vals = []
     gradients = []
-    run_name = f"{args.env_type}__{args.env_name}__{int(time.time())}"
+    time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_name = f"{args.env_type}__{args.env_name}__{time_token}"
     writer = SummaryWriter(f"runs/{run_name}")
+    writer.add_text(
+        "hyperparameters",
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+    )
     for step in range(args.total_timesteps):
         ## select actions
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step)
