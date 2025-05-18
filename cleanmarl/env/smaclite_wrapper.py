@@ -1,0 +1,47 @@
+import torch
+import numpy as np
+from torch.distributions import Categorical
+
+from .common_interface import CommonInterface
+
+import gymnasium as gym
+from gymnasium.spaces import flatdim
+from gymnasium.wrappers import TimeLimit
+import smaclite  
+
+class SMACliteWrapper(CommonInterface):
+    def __init__(self,map_name, seed=0, time_limit=150, **kwargs):
+        self.env = gym.make(f"smaclite/{map_name}-v0", seed=seed, **kwargs)
+        self.env = TimeLimit(self.env, max_episode_steps=time_limit)
+
+        self.n_agents = self.env.unwrapped.n_agents
+        self.episode_limit = time_limit
+        
+        self.longest_action_space = max(self.env.action_space, key=lambda x: x.n)
+    def step(self, actions):
+        """Returns obss, reward, terminated, truncated, info"""
+        actions = [int(act) for act in actions]
+        obs, reward, terminated, truncated, info = self.env.step(actions)
+        return np.array(obs), reward, terminated, truncated, info
+    def get_obs_size(self):
+        """Returns the shape of the observation"""
+        return self.env.unwrapped.obs_size
+    def get_action_size(self):
+        """Returns the total number of actions an agent could ever take"""
+        return flatdim(self.longest_action_space)
+    def reset(self, seed=None, options=None):
+        """Returns initial observations and info"""
+        obs,_ = self.env.reset(seed=seed, options=options)
+        return np.array(obs), {}
+    def get_avail_actions(self):
+        return np.array(self.env.unwrapped.get_avail_actions())
+    def get_agents(self):
+        return self.env.unwrapped.agents
+    def sample(self):
+        avail_actions = torch.tensor(self.get_avail_actions(),dtype=torch.float32)
+        masked_probs = avail_actions / avail_actions.sum(dim=1, keepdim=True) # Normalize avail_actions to turn them into probabilities
+        dist = Categorical(masked_probs)
+        actions = dist.sample()  
+        return actions
+    def close(self):
+        self.env.close()
