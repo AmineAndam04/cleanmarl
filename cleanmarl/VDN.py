@@ -25,21 +25,21 @@ class Args:
     """ Env family when using pz"""
     weight_sharing: bool = True 
     """ Whether the agents will share the same network weights  """
-    buffer_size: int = 10000
+    buffer_size: int = 5000
     """ The size of the replay buffer"""
-    total_timesteps: int = 1000000
-    gamma: float = 0.95
+    total_timesteps: int = 2000000
+    gamma: float = 0.99
     """ Discount factor"""
     """ Total steps in the environment during training"""
-    learning_starts: int = 10000 
+    learning_starts: int = 5000 
     """ Number of env steps to initialize the replay buffer"""
-    train_freq: int = 5
+    train_freq: int = 10
     """ Training frequency, relative to total_timesteps"""
     optimizer: str = "Adam"
     """ The optimizer"""
     sep_optimizers: bool = False
     """If true, and when weights are not shared among agents, separate optimizers will be used (different adam states ...)"""
-    learning_rate: float =  0.0001
+    learning_rate: float =  0.000005
     """ Learning rate"""
     batch_size: int = 64
     """Batch size"""
@@ -47,7 +47,7 @@ class Args:
     """the starting epsilon for exploration"""
     end_e: float = 0.05
     """the ending epsilon for exploration"""
-    exploration_fraction: float = 0.5
+    exploration_fraction: float = 0.025
     """the fraction of `total-timesteps` it takes from start-e to go end-e"""
     hidden_dim: int = 128
     """ Hidden dimension"""
@@ -55,13 +55,13 @@ class Args:
     """ Number of layers"""
     target_network_update_freq: int = 200
     """ Frequency of updating target network"""
-    log_every: int = 1000
+    log_every: int = 10000
     """ Logging steps"""
     grad_clip: float =  4
     """grad clipping"""
     polyak: float = 1
     """polyak coefficient when using polyak averaging for target network update"""
-    eval_steps: int = 5000
+    eval_steps: int = 20000
     """ Evaluate the policy each eval_steps steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
@@ -296,8 +296,8 @@ if __name__ == "__main__":
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
                 eval_obs = torch.from_numpy(eval_obs).to(args.device)
-                mask = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
-                q_values = agents_utility_network(eval_obs, mask = mask)
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                q_values = agents_utility_network(eval_obs, mask = mask_eval)
                 actions  = torch.argmax(q_values,dim=-1)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
                 current_reward += reward
