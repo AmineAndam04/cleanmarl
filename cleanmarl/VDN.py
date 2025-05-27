@@ -49,7 +49,7 @@ class Args:
     """the ending epsilon for exploration"""
     exploration_fraction: float = 0.025
     """the fraction of `total-timesteps` it takes from start-e to go end-e"""
-    hidden_dim: int = 128
+    hidden_dim: int = 64
     """ Hidden dimension"""
     num_layers: int = 2
     """ Number of layers"""

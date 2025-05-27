@@ -24,7 +24,7 @@ class PettingZooWrapper(CommonInterface):
             tuple([self.env.action_space(agent) for agent in self.agents]))
         self.observation_space = Tuple(
             tuple([self.env.observation_space(agent) for agent in self.agents]))
-        
+        self.longest_action_space = max(self.action_space, key=lambda x: x.n)
         self.longest_observation_space = max(
             self.observation_space, key=lambda x: x.shape
         )
@@ -69,8 +69,20 @@ class PettingZooWrapper(CommonInterface):
         return flatdim(self.longest_observation_space)
     def get_action_size(self):
         return self.action_space[0].n
+    def get_avail_actions(self):
+        avail_actions = []
+        for agent_id in range(self.n_agents):
+            avail_agent = self.get_avail_agent_actions(agent_id)
+            avail_actions.append(avail_agent)
+        return np.array(avail_actions)
+
+    def get_avail_agent_actions(self, agent_id):
+        """Returns the available actions for agent_id"""
+        valid = flatdim(self.action_space[agent_id]) * [1]
+        invalid = [0] * (self.longest_action_space.n - len(valid))
+        return valid + invalid
     def sample(self):
         return  [ self.env.action_space(agent).sample() for agent in self.agents]
     def close(self):
-        return self._env.close()
+        return self.env.close()
 
