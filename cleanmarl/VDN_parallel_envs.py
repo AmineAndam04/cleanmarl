@@ -57,7 +57,7 @@ class Args:
     """grad clipping"""
     polyak: float = 1
     """polyak coefficient when using polyak averaging for target network update"""
-    eval_steps: int = 8000
+    eval_steps: int = 10000
     """ Evaluate the policy each eval_steps steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
@@ -297,7 +297,9 @@ if __name__ == "__main__":
                 vdn_conn.send(("sample",None))
                 content = vdn_conn.recv()
                 actions.append(content["actions"])
-            actions = np.array(actions)
+        
+            actions = torch.stack(actions).numpy()
+
         else:
             ## instead of looping through the agents, we can see the number of the agents as a batch size (env.n_agents, shape_obs) ---> (batch_size, shape_obs)
             obs = torch.from_numpy(obs).to(args.device)
@@ -409,7 +411,7 @@ if __name__ == "__main__":
                 current_reward += reward
                 current_ep_length += 1
                 if done or truncated:
-                    eval_obs, _ = eval_env.reset()
+                    eval_obs, _ = eval_env.reset(seed=random.randint(0, 100000))
                     eval_ep_reward.append(current_reward)
                     eval_ep_length.append(current_ep_length)
                     eval_ep_stats.append(infos)

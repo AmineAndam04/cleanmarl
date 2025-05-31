@@ -28,7 +28,7 @@ class PettingZooWrapper(CommonInterface):
         self.longest_observation_space = max(
             self.observation_space, key=lambda x: x.shape
         )
-    def reset(self, seed):
+    def reset(self, seed=0):
         """ 
         args will be used when the seed is specified 
         """
