@@ -57,7 +57,7 @@ class Args:
     """grad clipping"""
     polyak: float = 1
     """polyak coefficient when using polyak averaging for target network update"""
-    eval_steps: int = 20000
+    eval_steps: int = 8000
     """ Evaluate the policy each eval_steps steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
@@ -217,7 +217,7 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
     args.train_freq = closest_multiple(args.train_freq,args.num_envs)
     args.target_network_update_freq = closest_multiple(args.target_network_update_freq,args.num_envs)
-    
+    args.eval_steps = closest_multiple(args.eval_steps,args.num_envs)
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
     ## Create the pipes to communicate between the main process (VDN algorithm) and child processes (envs)
     conns = [Pipe() for _ in range(args.num_envs)]
@@ -237,7 +237,10 @@ if __name__ == "__main__":
     env_info = vdn_conns[0].recv()
     print(env_info)
     
-
+    eval_env = environment(env_type= args.env_type,
+                      env_name=args.env_name,
+                      env_family=args.env_family,
+                      kwargs=kwargs)
     
     agents_utility_network = Qnetwrok(input_dim=env_info["obs_size"],
                                           hidden_dim=args.hidden_dim,
@@ -389,41 +392,41 @@ if __name__ == "__main__":
                 q_vals = []
                 gradients = []
 
-#         if step % args.eval_steps == 0 and step > args.learning_starts:
-#             eval_obs,_ = eval_env.reset()
-#             eval_ep = 0
-#             eval_ep_reward = []
-#             eval_ep_length = []
-#             eval_ep_stats = []
-#             current_reward = 0
-#             current_ep_length = 0
-#             while eval_ep < args.num_eval_ep:
-#                 eval_obs = torch.from_numpy(eval_obs).to(args.device)
-#                 mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
-#                 q_values = agents_utility_network(eval_obs, mask = mask_eval)
-#                 actions  = torch.argmax(q_values,dim=-1)
-#                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
-#                 current_reward += reward
-#                 current_ep_length += 1
-#                 if done or truncated:
-#                     eval_obs, _ = eval_env.reset()
-#                     eval_ep_reward.append(current_reward)
-#                     eval_ep_length.append(current_ep_length)
-#                     eval_ep_stats.append(infos)
-#                     current_reward = 0
-#                     current_ep_length = 0
-#                     eval_ep +=1
-#                 eval_obs = next_obs_
-#             writer.add_scalar("eval/ep_reward",np.mean(eval_ep_reward), step)
-#             writer.add_scalar("eval/std_ep_reward",np.std(eval_ep_reward), step)
-#             writer.add_scalar("eval/ep_length",np.mean(eval_ep_length), step)
-#             if args.env_type == 'smaclite':
-#                 writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)
+        if step % args.eval_steps == 0 and step > args.learning_starts:
+            eval_obs,_ = eval_env.reset(seed=random.randint(0, 100000))
+            eval_ep = 0
+            eval_ep_reward = []
+            eval_ep_length = []
+            eval_ep_stats = []
+            current_reward = 0
+            current_ep_length = 0
+            while eval_ep < args.num_eval_ep:
+                eval_obs = torch.from_numpy(eval_obs).to(args.device)
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                q_values = agents_utility_network(eval_obs, mask = mask_eval)
+                actions  = torch.argmax(q_values,dim=-1)
+                next_obs_, reward, done, truncated, infos = eval_env.step(actions)
+                current_reward += reward
+                current_ep_length += 1
+                if done or truncated:
+                    eval_obs, _ = eval_env.reset()
+                    eval_ep_reward.append(current_reward)
+                    eval_ep_length.append(current_ep_length)
+                    eval_ep_stats.append(infos)
+                    current_reward = 0
+                    current_ep_length = 0
+                    eval_ep +=1
+                eval_obs = next_obs_
+            writer.add_scalar("eval/ep_reward",np.mean(eval_ep_reward), step)
+            writer.add_scalar("eval/std_ep_reward",np.std(eval_ep_reward), step)
+            writer.add_scalar("eval/ep_length",np.mean(eval_ep_length), step)
+            if args.env_type == 'smaclite':
+                writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)
                 
 
         
 
-# ## Fix the sampling from replaybuffer
+## Fix the sampling from replaybuffer
 
 
 
