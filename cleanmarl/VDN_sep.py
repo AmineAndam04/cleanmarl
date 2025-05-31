@@ -23,6 +23,8 @@ class Args:
     """ Name of the environment"""
     env_family: str ="sisl"
     """ Env family when using pz"""
+    weight_sharing: bool = True 
+    """ Whether the agents will share the same network weights  """
     buffer_size: int = 5000
     """ The size of the replay buffer"""
     total_timesteps: int = 2000000
@@ -35,6 +37,8 @@ class Args:
     """ Training frequency, relative to total_timesteps"""
     optimizer: str = "Adam"
     """ The optimizer"""
+    sep_optimizers: bool = False
+    """If true, and when weights are not shared among agents, separate optimizers will be used (different adam states ...)"""
     learning_rate: float =  0.000005
     """ Learning rate"""
     batch_size: int = 64

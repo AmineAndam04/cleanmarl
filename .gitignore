@@ -3,3 +3,8 @@
 /Resources
 **/__pycache__/
 /.vscode
+/cleanmarl/runs
+/tests
+/smaclite
+/.DS_Store
+/.vscode

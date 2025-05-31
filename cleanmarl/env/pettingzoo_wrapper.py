@@ -28,11 +28,11 @@ class PettingZooWrapper(CommonInterface):
         self.longest_observation_space = max(
             self.observation_space, key=lambda x: x.shape
         )
-    def reset(self, *args):
+    def reset(self, seed):
         """ 
         args will be used when the seed is specified 
         """
-        obs, info = self.env.reset(*args)
+        obs, info = self.env.reset(seed = seed)
         obs = np.array([obs[agent].flatten() for agent in self.env.agents])
         self.last_obs = obs ## to avoid empty observations when done (look at step(actions))
         return obs, {}
