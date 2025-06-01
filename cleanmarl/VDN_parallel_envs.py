@@ -35,7 +35,7 @@ class Args:
     """ Training frequency, relative to total_timesteps"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate: float =  0.00001
+    learning_rate: float =  0.0001
     """ Learning rate"""
     batch_size: int = 8
     """Batch size"""
@@ -49,7 +49,7 @@ class Args:
     """ Hidden dimension"""
     num_layers: int = 2
     """ Number of layers"""
-    target_network_update_freq: int = 5000
+    target_network_update_freq: int = 10000
     """ Frequency of updating target network"""
     log_every: int = 3000
     """ Logging steps"""
