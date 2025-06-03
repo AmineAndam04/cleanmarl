@@ -78,7 +78,7 @@ class Qnetwrok(nn.Module):
         self.hidden_dim = hidden_dim
         self.fc1 = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU())
         self.gru = nn.GRUCell(args.hidden_dim, hidden_dim)
-        self.fc2 = nn.Sequential(nn.Linear(hidden_dim, output_dim))        
+        self.fc2 = nn.Sequential(nn.ReLU(),nn.Linear(hidden_dim, output_dim))        
     
     def forward(self,x,h=None,mask=None):
         x = self.fc1(x)
