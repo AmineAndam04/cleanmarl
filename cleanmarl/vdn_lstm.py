@@ -8,7 +8,6 @@ import random
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
 import torch.nn.functional as F
-import time
 import datetime
 from torch.utils.tensorboard import SummaryWriter
 # * Compute the loss function
