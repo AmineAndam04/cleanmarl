@@ -1,0 +1,5 @@
+
+
+## TO day
+    - Check final bugs and errors.
+    - Try Optuna\Grid search but with parallel environments

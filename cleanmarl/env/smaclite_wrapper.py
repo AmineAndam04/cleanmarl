@@ -10,29 +10,32 @@ from gymnasium.wrappers import TimeLimit
 import smaclite  
 
 class SMACliteWrapper(CommonInterface):
-    def __init__(self,map_name, seed=0, time_limit=150, **kwargs):
+    def __init__(self,map_name, seed=0, time_limit=150, agent_ids=False,**kwargs):
         self.env = gym.make(f"smaclite/{map_name}-v0", seed=seed, **kwargs)
         self.env = TimeLimit(self.env, max_episode_steps=time_limit)
-
+        self.agent_ids = agent_ids
         self.n_agents = self.env.unwrapped.n_agents
         self.episode_limit = time_limit
-        
         self.longest_action_space = max(self.env.action_space, key=lambda x: x.n)
+        
+
     def step(self, actions):
         """Returns obss, reward, terminated, truncated, info"""
         actions = [int(act) for act in actions]
         obs, reward, terminated, truncated, info = self.env.step(actions)
-        return np.array(obs), reward, terminated, truncated, info
+        obs = self.process_obs(obs)
+        return obs, reward, terminated, truncated, info
     def get_obs_size(self):
         """Returns the shape of the observation"""
-        return self.env.unwrapped.obs_size
+        return self.env.unwrapped.obs_size + self.agent_ids * self.n_agents
     def get_action_size(self):
         """Returns the total number of actions an agent could ever take"""
         return flatdim(self.longest_action_space)
     def reset(self, seed=None, options=None):
         """Returns initial observations and info"""
         obs,_ = self.env.reset(seed=seed, options=options)
-        return np.array(obs), {}
+        obs = self.process_obs(obs)
+        return obs, {}
     def get_avail_actions(self):
         return np.array(self.env.unwrapped.get_avail_actions())
     def get_agents(self):
@@ -43,5 +46,10 @@ class SMACliteWrapper(CommonInterface):
         dist = Categorical(masked_probs)
         actions = dist.sample()  
         return actions
+    def process_obs(self,obs):
+        obs = np.array(obs)
+        if self.agent_ids:
+            obs = np.concatenate((obs,np.eye(self.n_agents)),axis=1)
+        return obs
     def close(self):
         self.env.close()

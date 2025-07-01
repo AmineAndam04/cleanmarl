@@ -8,7 +8,7 @@ import numpy as np
 
 class PettingZooWrapper(CommonInterface):
     # Inspired from :https://github.com/uoe-agents/epymarl/blob/main/src/envs/pz_wrapper.py
-    def __init__(self,family, env_name,**kwargs):
+    def __init__(self,family, env_name,agent_ids=False,**kwargs):
         """ 
         PettingZoo has families of environments (Atari, Butterfly, Classic, MPE, SISL)
         if order to use the pursuit game (sisl family), you usually import it like this:
@@ -28,12 +28,13 @@ class PettingZooWrapper(CommonInterface):
         self.longest_observation_space = max(
             self.observation_space, key=lambda x: x.shape
         )
-    def reset(self, seed=0):
+        self.agent_ids= agent_ids
+    def reset(self, seed=None):
         """ 
         args will be used when the seed is specified 
         """
-        obs, info = self.env.reset(seed = seed)
-        obs = np.array([obs[agent].flatten() for agent in self.env.agents])
+        obs, _ = self.env.reset(seed = seed)
+        obs = self.process_obs(obs)
         self.last_obs = obs ## to avoid empty observations when done (look at step(actions))
         return obs, {}
     
@@ -45,7 +46,7 @@ class PettingZooWrapper(CommonInterface):
         dict_actions = {agent: actions[index].item() for index,agent in enumerate(self.agents)}
         observations, rewards, dones, truncated, infos = self.env.step(dict_actions)
 
-        obs = np.array([observations[agent].flatten() for agent in self.agents])
+        obs = self.process_obs(observations) 
         rewards = [rewards[agent] for agent in self.agents]
         done = all([dones[agent] for agent in self.agents])
         truncated = all([truncated[agent] for agent in self.agents])
@@ -66,7 +67,7 @@ class PettingZooWrapper(CommonInterface):
     
     def get_obs_size(self):
         """Returns the shape of the observation"""
-        return flatdim(self.longest_observation_space)
+        return flatdim(self.longest_observation_space)  +  self.agent_ids * self.n_agents
     def get_action_size(self):
         return self.action_space[0].n
     def get_avail_actions(self):
@@ -83,6 +84,11 @@ class PettingZooWrapper(CommonInterface):
         return valid + invalid
     def sample(self):
         return  [ self.env.action_space(agent).sample() for agent in self.agents]
+    def process_obs(self,obs):
+        obs = np.array([obs[agent].flatten() for agent in self.agents])
+        if self.agent_ids:
+            obs = np.concatenate((obs,np.eye(self.n_agents)),axis=1)
+        return obs
     def close(self):
         return self.env.close()
 
