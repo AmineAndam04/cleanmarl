@@ -263,8 +263,7 @@ if __name__ == "__main__":
         normalize_reward= args.normalize_reward
     )
     # Reset the environments
-    obs = []
-    avail_actions = []
+    
     for vdn_conn in vdn_conns:
         vdn_conn.send(("reset",None))
     contents = [vdn_conn.recv() for vdn_conn in vdn_conns]

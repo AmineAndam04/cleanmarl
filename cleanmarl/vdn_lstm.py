@@ -74,7 +74,7 @@ class Args:
     
 
 class Qnetwrok(nn.Module):
-    def __init__(self, input_dim,hidden_dim,output_dim) -> None:
+    def __init__(self, input_dim,hidden_dim,output_dim):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.fc1 = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU())
