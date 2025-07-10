@@ -5,6 +5,7 @@
 /.vscode
 /cleanmarl/runs
 /tests
+/runs_hpc
 /smaclite
 /.DS_Store
 /.vscode

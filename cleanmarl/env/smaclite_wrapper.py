@@ -28,6 +28,12 @@ class SMACliteWrapper(CommonInterface):
     def get_obs_size(self):
         """Returns the shape of the observation"""
         return self.env.unwrapped.obs_size + self.agent_ids * self.n_agents
+    def get_state_size(self):
+        """Returns the size of the state (needed for QMIX)"""
+        return self.env.unwrapped.state_size
+    def get_state(self):
+        """Returns the global state (needed for QMIX)"""
+        return self.env.get_state()
     def get_action_size(self):
         """Returns the total number of actions an agent could ever take"""
         return flatdim(self.longest_action_space)

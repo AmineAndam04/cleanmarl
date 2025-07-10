@@ -24,7 +24,7 @@ class Args:
     """ Env family when using pz"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
-    num_envs: int  = 10
+    num_envs: int  = 8
     """ Number of parallel environments"""
     buffer_size: int = 100000
     """ The size of the replay buffer"""
@@ -34,13 +34,13 @@ class Args:
     """ Discount factor"""
     learning_starts: int = 10000 
     """ Number of env steps to initialize the replay buffer"""
-    train_freq: int = 2 # choose train_freq % num_envs == 0
+    train_freq: int = 10 # choose train_freq % num_envs == 0
     """ Train the network each «train_freq» step in the environment. The used value is train_freq*num_envs"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate: float =  0.00005
+    learning_rate: float =  0.00001
     """ Learning rate"""
-    batch_size: int = 13
+    batch_size: int = 8
     """ Batch size"""
     start_e: float = 1
     """ The starting value of epsilon, for exploration"""
@@ -48,19 +48,19 @@ class Args:
     """ The end value of epsilon, for exploration"""
     exploration_fraction: float = 0.01
     """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
-    hidden_dim: int = 64
+    hidden_dim: int = 128
     """ Hidden dimension"""
     num_layers: int = 2
     """ Number of layers"""
-    target_network_update_freq: int = 2
+    target_network_update_freq: int = 5000
     """ Frequency of updating target network. The used value is target_network_update_freq*num_envs"""
     log_every: int = 1000
     """ Logging steps"""
     grad_clip: float =  10
     """grad clipping"""
-    polyak: float = 0.01
+    polyak: float = 1
     """ Update the target network each target_network_update_freq» step in the environment"""
-    eval_steps: int = 1000
+    eval_steps: int = 10000
     """ Evaluate the policy each eval_steps steps. The used value is eval_steps*num_envs"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
@@ -244,11 +244,6 @@ if __name__ == "__main__":
                                           hidden_dim=args.hidden_dim,
                                           num_layer=args.num_layers,
                                           output_dim=env_info["action_size"])
-    soft_update(
-            target_net=agents_target_network,
-            utility_net=agents_utility_network,
-            polyak=1.0
-        )
     ## initialize the optimizer
     optimizer = getattr(optim, args.optimizer) # get which optimizer to use from args
     optimizer = optimizer(agents_utility_network.parameters(),lr = args.learning_rate)
@@ -267,10 +262,11 @@ if __name__ == "__main__":
     avail_actions = []
     for vdn_conn in vdn_conns:
         vdn_conn.send(("reset",None))
-    contents = [vdn_conn.recv() for vdn_conn in vdn_conns]
-    obs  = np.stack([content["obs"]            for content in contents], axis=0)
-    mask = np.stack([content["avail_actions"] for content in contents], axis=0)
-
+        content = vdn_conn.recv()
+        obs.append(content["obs"])
+        avail_actions.append(content["avail_actions"])
+    mask = torch.tensor(np.array(avail_actions), dtype=torch.bool, device=args.device)
+    
     ep_reward = np.zeros(args.num_envs)
     ep_length = np.zeros(args.num_envs)
     ep_rewards = []
@@ -293,14 +289,13 @@ if __name__ == "__main__":
             actions = []
             for vdn_conn in vdn_conns:
                 vdn_conn.send(("sample",None))
-            
-            contents = [vdn_conn.recv() for vdn_conn in vdn_conns]
-            actions = np.array([content["actions"] for content in contents])
+                content = vdn_conn.recv()
+                actions.append(content["actions"])
+            actions = np.array(actions)
 
         else:
             ## instead of looping through the agents, we can see the number of the agents as a batch size (env.n_agents, shape_obs) ---> (batch_size, shape_obs)
             obs = torch.from_numpy(obs).to(args.device).float()
-            mask = torch.tensor(mask, dtype=torch.bool, device=args.device)
             obs = obs.view(args.num_envs * env_info["n_agents"], -1)
             mask = mask.view(args.num_envs * env_info["n_agents"], -1)
             with torch.no_grad():
@@ -312,22 +307,21 @@ if __name__ == "__main__":
         # Execute the action
         for i,vdn_conn in enumerate(vdn_conns):
                 vdn_conn.send(("step",actions[i]))
-        contents = [vdn_conn.recv() for vdn_conn in vdn_conns]
-        next_obs = np.stack([content["next_obs"] for content in contents], axis=0)
-        reward = np.array([content["reward"]   for content in contents])
-        done = np.array([content["done"]     for content in contents])
-        truncated = np.array([content["truncated"]     for content in contents])
-        mask = np.stack([content["avail_actions"] for content in contents], axis=0)
-        infos = [content.get("infos") for content in contents]
-        
+                content = vdn_conn.recv()
+                next_obs.append(content["next_obs"])
+                reward.append(content["reward"])
+                done.append(content["done"])
+                truncated.append(content["truncated"])
+                infos.append(content["infos"])
+                mask.append(content["avail_actions"])
         step += args.num_envs
 
         ep_reward = [ep_reward[i] + reward[i] for i in range(args.num_envs) ] 
         ep_length = [ep + 1 for ep in ep_length]
         
-        rb.store(obs, actions,reward,done,next_obs,mask) 
+        rb.store(obs, actions,reward,done,np.array(next_obs),mask)
         
-        obs = next_obs 
+        obs = np.array(next_obs)
         
         for i in range(args.num_envs):
             if done[i] or truncated[i]:
@@ -341,13 +335,12 @@ if __name__ == "__main__":
                     ep_stats.append(infos[i])
                 ep_reward[i] = 0
                 ep_length[i] = 0
-       
+        mask = torch.tensor(np.array(mask), dtype=torch.bool, device=args.device)
 
         if step % (args.log_every * args.num_envs) == 0:
                 if len(ep_rewards) > 0: 
                     writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
                     writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
-                    writer.add_scalar("rollout/epsilon",epsilon,step)
                     if args.env_type == 'smaclite':
                         writer.add_scalar("rollout/battle_won",np.mean(np.mean([info["battle_won"] for info in ep_stats])), step)
                     ep_rewards = []

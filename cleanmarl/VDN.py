@@ -18,7 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 class Args:
     env_type: str = "smaclite" #"pz"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "MMM" #"simple_spread_v3" #"pursuit_v4"
+    env_name: str = "2s_vs_1sc" #"simple_spread_v3" #"pursuit_v4"
     """ Name of the environment """
     env_family: str ="sisl"
     """ Env family when using pz"""
@@ -32,11 +32,11 @@ class Args:
     """ Discount factor"""
     learning_starts: int = 5000 
     """ Number of env steps to initialize the replay buffer"""
-    train_freq: int = 20
+    train_freq: int = 5
     """ Train the network each «train_freq» step in the environment"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate: float =  0.00001
+    learning_rate: float =  0.0003
     """ Learning rate"""
     batch_size: int = 128
     """ Batch size"""
@@ -46,7 +46,7 @@ class Args:
     """ The end value of epsilon, for exploration"""
     exploration_fraction: float = 0.05
     """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
-    hidden_dim: int = 64
+    hidden_dim: int = 128
     """ Hidden dimension"""
     num_layers: int = 2
     """ Number of layers"""

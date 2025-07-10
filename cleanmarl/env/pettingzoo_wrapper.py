@@ -68,6 +68,12 @@ class PettingZooWrapper(CommonInterface):
     def get_obs_size(self):
         """Returns the shape of the observation"""
         return flatdim(self.longest_observation_space)  +  self.agent_ids * self.n_agents
+    def get_state_size(self):
+        """Returns the size of the state (needed for QMIX)"""
+        return flatdim(self.longest_observation_space) * self.n_agents
+    def get_state(self):
+        """Returns the global state (needed for QMIX)"""
+        return self.state
     def get_action_size(self):
         return self.action_space[0].n
     def get_avail_actions(self):
@@ -86,6 +92,7 @@ class PettingZooWrapper(CommonInterface):
         return  [ self.env.action_space(agent).sample() for agent in self.agents]
     def process_obs(self,obs):
         obs = np.array([obs[agent].flatten() for agent in self.agents])
+        self.state = obs.reshape(-1)
         if self.agent_ids:
             obs = np.concatenate((obs,np.eye(self.n_agents)),axis=1)
         return obs
