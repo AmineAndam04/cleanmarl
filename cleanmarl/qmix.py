@@ -16,9 +16,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Args:
-    env_type: str = "pz" #"pz"
+    env_type: str = "smaclite" #"pz"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "simple_spread_v3" #"simple_spread_v3" #"pursuit_v4"
+    env_name: str = "MMM" #"simple_spread_v3" #"pursuit_v4"
     """ Name of the environment """
     env_family: str ="mpe"
     """ Env family when using pz"""
@@ -34,7 +34,7 @@ class Args:
     """ Train the network each «train_freq» step in the environment"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate: float =  0.0005
+    learning_rate: float =  0.0001
     """ Learning rate"""
     batch_size: int = 32
     """ Batch size"""
@@ -46,7 +46,7 @@ class Args:
     """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
     hidden_dim: int = 64
     """ Hidden dimension"""
-    hyper_dim: int = 32
+    hyper_dim: int = 64
     """ Hidden dimension of hyper-network"""
     num_layers: int = 2
     """ Number of layers"""
@@ -58,9 +58,9 @@ class Args:
     """ Gradient clipping value"""
     polyak: float = 1
     """ Polyak coefficient when using polyak averaging for target network update"""
-    eval_steps: int = 10
+    eval_steps: int = 50
     """ Evaluate the policy each «eval_steps» steps"""
-    num_eval_ep: int = 10
+    num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     device: str ="cpu"
     """ Device (cpu, gpu, mps)"""

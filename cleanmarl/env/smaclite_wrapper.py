@@ -33,7 +33,7 @@ class SMACliteWrapper(CommonInterface):
         return self.env.unwrapped.state_size
     def get_state(self):
         """Returns the global state (needed for QMIX)"""
-        return self.env.get_state()
+        return self.env.unwrapped.get_state()
     def get_action_size(self):
         """Returns the total number of actions an agent could ever take"""
         return flatdim(self.longest_action_space)

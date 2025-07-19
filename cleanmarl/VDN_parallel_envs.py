@@ -297,7 +297,7 @@ if __name__ == "__main__":
             actions = np.array([content["actions"] for content in contents])
 
         else:
-            ## instead of looping through the agents, we can see the number of the agents as a batch size (env.n_agents, shape_obs) ---> (batch_size, shape_obs)
+            
             obs = torch.from_numpy(obs).to(args.device).float()
             mask = torch.tensor(mask, dtype=torch.bool, device=args.device)
             obs = obs.view(args.num_envs * env_info["n_agents"], -1)
