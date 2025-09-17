@@ -23,7 +23,7 @@ class Args:
     """ Env family when using pz"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
-    batch_size: int = 10
+    batch_size: int = 5
     """ Number of episodes to collect in each rollout"""
     actor_hidden_dim: int = 128
     """ Hidden dimension of actor network"""
@@ -35,9 +35,9 @@ class Args:
     """ Number of hidden layers of critic network"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate_actor: float =  0.00001
+    learning_rate_actor: float =  0.0001
     """ Learning rate"""
-    learning_rate_critic: float =  0.00001
+    learning_rate_critic: float =  0.0001
     """ Learning rate"""
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
@@ -60,6 +60,7 @@ class Args:
     entropy_coef: float = 0.05
     """ Entropy coefficient """
     nsteps : int = 3
+    tbptt:int = 10
 
 class  RolloutBuffer():
     def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False):
@@ -108,34 +109,35 @@ class  RolloutBuffer():
             mask,
         )
 class Actor(nn.Module):
-    def __init__(self, input_dim,hidden_dim,num_layer,output_dim) -> None:
+    def __init__(self, input_dim,hidden_dim,output_dim):
         super().__init__()
-        self.layers = nn.ModuleList()
-        self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
-        for i in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
-        self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
-        
-
+        self.hidden_dim = hidden_dim
+        self.fc1 = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU())
+        self.gru = nn.GRUCell(hidden_dim, hidden_dim)
+        self.fc2 = nn.Sequential(nn.ReLU(),nn.Linear(hidden_dim, output_dim))        
     
-    def act(self,x,avail_action=None):
-        for layer in self.layers:
-            x = layer(x)
+    def act(self,x,h=None,avail_action=None):
+        x = self.fc1(x)
+        if h is None:
+            h = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+        h = self.gru(x,h)
+        x = self.fc2(h)
         if avail_action is not None:
             x = x.masked_fill(~avail_action, float('-inf'))
         x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
         distribution = Categorical(logits=x)
         action = distribution.sample()
-        return action
-    def logits(self,x,avail_action=None):
-        for layer in self.layers:
-            x = layer(x)
+        return action,h
+        
+    def logits(self,x,h=None,avail_action=None):
+        x = self.fc1(x)
+        if h is None:
+            h = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+        h = self.gru(x,h)
+        x = self.fc2(h)
         if avail_action is not None:
             x = x.masked_fill(~avail_action, -1e9)
-        # x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
-        return x
+        return x,h
     
 class Critic(nn.Module):
     def __init__(self, input_dim,hidden_dim,num_layer,output_dim,num_agents) -> None:
@@ -252,7 +254,6 @@ if __name__ == "__main__":
     actor = Actor(
         input_dim=env.get_obs_size(),
         hidden_dim=args.actor_hidden_dim,
-        num_layer=args.actor_num_layers,
         output_dim=env.get_action_size()
     )
     print("env.get_obs_size()",env.get_obs_size())
@@ -305,12 +306,13 @@ if __name__ == "__main__":
             obs, _ = env.reset()
             ep_reward, ep_length = 0,0
             done, truncated = False, False
+            h = None
             while not done and not truncated:
                 obs = torch.from_numpy(obs).to(args.device).float()
                 avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
                 state = torch.from_numpy(env.get_state()).to(args.device).float()
                 with torch.no_grad():
-                    actions = actor.act(obs,avail_action=avail_action)
+                    actions,h = actor.act(obs,h=h,avail_action=avail_action)
                 next_obs, reward, done, truncated, infos = env.step(actions)
                 ep_reward += reward
                 ep_length += 1
@@ -419,50 +421,46 @@ if __name__ == "__main__":
         ### 3. Update actor
         actor_losses = []
         entropies = []
+        h = None
+        truncated_actor_loss = None
         for t in range(b_obs.size(1)):
-            logits = actor.logits( b_obs[:,t],b_avail_actions[:,t]) 
+            b_obs_t = b_obs[:,t].reshape(args.batch_size*env.n_agents,-1)
+            b_avail_actions_t = b_avail_actions[:,t].reshape(args.batch_size*env.n_agents,-1)
+
+            logits,h = actor.logits( b_obs_t,h,b_avail_actions_t) 
+            logits = logits.reshape(args.batch_size,env.n_agents,-1)
             pi = F.softmax(logits,dim=-1)
-            # log_pi = F.log_softmax(logits, dim=-1)*b_avail_actions[:,t]
-            # pi = torch.exp(log_pi)*b_avail_actions[:,t]
             log_pi = torch.log(pi + 1e-8)
-            # print("b_avail_actions[:,t])",b_avail_actions[:,t])
             entropy_loss = -(pi*log_pi).sum(dim=-1)[b_mask[:,t]]
-            # print("entropy_loss",entropy_loss.shape)
             entropy_loss = entropy_loss.mean()
-            entropies.append(entropy_loss.item())
-            # print("pi",pi)
-            # print("pi corrected",pi*b_avail_actions[:,t])
-            # print("log_prob",log_pi)
-            # print("log_prob corrected",log_pi*b_avail_actions[:,t])
-            # print("pi* b_avail_actions[:,t]",pi* b_avail_actions[:,t])
             q_values = critic(state = b_states[:,t],
                               observations = b_obs[:,t],
                               actions =b_actions[:,t])
             q_values = q_values.detach()
-            # coma_baseline = (pi * q_values[:,t]).sum(dim = -1)
             coma_baseline = (pi * q_values).sum(dim = -1)
-            # print("coma_baseline",coma_baseline)
-            # print("q_values[:,t]",q_values[:,t])
-            # print("b_actions[:,t]",b_actions[:,t])
-            # current_q =  torch.gather(q_values[:,t],dim=-1, index=b_actions[:,t].unsqueeze(-1)).squeeze()
             current_q =  torch.gather(q_values,dim=-1, index=b_actions[:,t].unsqueeze(-1)).squeeze()
-            # print("current_q",current_q.shape)
-            # print("coma_baseline",coma_baseline.shape)
             advantage = (current_q - coma_baseline).detach()
-            # advantage = (advantage - advantage.mean()) / advantage.std()
             log_pi = torch.gather(log_pi,dim=-1, index=b_actions[:,t].unsqueeze(-1)).squeeze()
-            # print("taken log_pi",log_pi)
-            # print("log_pi",log_pi.shape)
-            # print("advantage",advantage.shape)
-            # print("b_mask[:,t]",b_mask[:,t].shape)
             actor_loss = -(log_pi[b_mask[:,t]] * advantage[b_mask[:,t]]).sum()
             actor_loss /= (b_mask[:,t].sum())
-            actor_losses.append(actor_loss.item())
             # print(actor_loss)
             actor_loss = actor_loss - args.entropy_coef*entropy_loss
-            actor_optimizer.zero_grad()
-            actor_loss.backward()
-            actor_optimizer.step()
+            if truncated_actor_loss is  None:
+                    truncated_actor_loss = actor_loss
+            else:
+                truncated_actor_loss += actor_loss
+            if ((t+1) % args.tbptt == 0) or (t == (b_obs.size(1)-1)):
+                
+                actor_optimizer.zero_grad()
+                truncated_actor_loss.backward()
+                actor_optimizer.step()
+                truncated_actor_loss = None
+                h = h.detach()
+            
+                
+            actor_losses.append(actor_loss.item())
+            entropies.append(entropy_loss.item())
+            
         writer.add_scalar("train/critc_loss", np.mean(critic_losses), step)
         writer.add_scalar("train/actor_loss", np.mean(actor_losses), step)
         writer.add_scalar("train/entropy", np.mean(entropies), step)
