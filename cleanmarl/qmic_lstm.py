@@ -380,6 +380,7 @@ if __name__ == "__main__":
                 eval_obs = next_obs_
                 if done or truncated:
                     eval_obs, _ = eval_env.reset()
+                    h_eval = None
                     eval_ep_reward.append(current_reward)
                     eval_ep_length.append(current_ep_length)
                     eval_ep_stats.append(infos)

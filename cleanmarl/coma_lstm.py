@@ -53,8 +53,8 @@ class Args:
     """ Update the target network each target_network_update_freq» step in the environment"""
     polyak: float = 1
     """ Polyak coefficient when using polyak averaging for target network update"""
-    eval_steps: int = 30000
-    """ Evaluate the policy each «eval_steps» steps"""
+    eval_steps: int = 1
+    """ Evaluate the policy each «eval_steps» updates"""
     num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     entropy_coef: float = 0.05
@@ -296,6 +296,8 @@ if __name__ == "__main__":
                         num_agents= env.n_agents,
                         normalize_reward= args.normalize_reward)
     step = 0
+    total_updates = 0
+    total_episodes = 0
     while step < args.total_timesteps:
         ep_rewards = []
         ep_lengths = []
@@ -343,6 +345,7 @@ if __name__ == "__main__":
         ## logging
         writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
         writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+        total_episodes += args.batch_size
         if args.env_type == 'smaclite':
             writer.add_scalar("rollout/battle_won",np.mean(np.mean([info["battle_won"] for info in ep_stats])), step)
         b_obs,b_actions,b_reward,b_states,b_avail_actions,b_done,b_mask = rb.get_batch()
@@ -464,8 +467,8 @@ if __name__ == "__main__":
         writer.add_scalar("train/critc_loss", np.mean(critic_losses), step)
         writer.add_scalar("train/actor_loss", np.mean(actor_losses), step)
         writer.add_scalar("train/entropy", np.mean(entropies), step)
-
-        if step % args.eval_steps == 0:
+        total_updates+= 1
+        if total_updates % args.eval_steps == 0:
             eval_obs,_ = eval_env.reset()
             eval_ep = 0
             eval_ep_reward = []
@@ -473,18 +476,20 @@ if __name__ == "__main__":
             eval_ep_stats = []
             current_reward = 0
             current_ep_length = 0
+            h_eval = None 
             while eval_ep < args.num_eval_ep:
                 eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
                 mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
 
                 with torch.no_grad():
-                    actions = actor.act(eval_obs,avail_action=mask_eval)
+                    actions,h_eval = actor.act(eval_obs,h_eval,avail_action=mask_eval)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_
                 if done or truncated:
                     eval_obs, _ = eval_env.reset()
+                    h_eval = None
                     eval_ep_reward.append(current_reward)
                     eval_ep_length.append(current_ep_length)
                     eval_ep_stats.append(infos)
