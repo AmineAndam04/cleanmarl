@@ -62,7 +62,7 @@ class Args:
     entropy_coef: float = 0.001
     """ Entropy coefficient """
     nsteps : int = 1
-
+    use_tdlamda: bool = True
     start_e: float = 0.5
     """ The starting value of epsilon, for exploration"""
     end_e: float = 0.002
@@ -464,51 +464,43 @@ if __name__ == "__main__":
         ### 1. Compute TD(λ) from "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
         with torch.no_grad():
             return_lambda = torch.zeros_like(b_actions).float()
-            for ep_idx in range(return_lambda.size(0)):
-                ep_len = b_mask[ep_idx].sum()
-                last_return_lambda = 0
-                for t in reversed(range(ep_len)):
-                    if t == (ep_len -1):
-                        next_action_value = 0
-                    else:
-                        next_action_value = target_critic(state = b_states[ep_idx,t+1],
-                                                        observations = b_obs[ep_idx,t+1],
-                                                        actions =b_actions[ep_idx,t+1],
-                                                        avail_actions= b_avail_actions[ep_idx,t+1] )
-                        
-                        next_action_value = torch.gather(next_action_value,dim=-1, index=b_actions[ep_idx,t+1].unsqueeze(-1)).squeeze()
-                        # next_action_value, _ = next_action_value.max(dim=-1)
-                        
-                        # print(last_return_lambda)
-                    return_lambda[ep_idx,t] =last_return_lambda = b_reward[ep_idx,t] + args.gamma * (args.td_lambda * last_return_lambda + (1-args.td_lambda)*next_action_value)
-        # with torch.no_grad():
-        #     return_lambda = torch.zeros_like(b_actions).float()
-        #     for ep_idx in range(return_lambda.size(0)):
-        #         ep_len = b_mask[ep_idx].sum()
-        #         for t in range(ep_len):
-        #             if t < (ep_len - args.nsteps):
-        #                 return_t_n =  b_reward[ep_idx,t:t+args.nsteps]
-        #                 discounts = torch.tensor([args.gamma ** i for i in range(return_t_n.size(-1))])
-        #                 return_t_n = (return_t_n*discounts).sum(-1)
-        #                 action_value_t_n = target_critic(state = b_states[ep_idx,t+args.nsteps],
-        #                                                 observations = b_obs[ep_idx,t+args.nsteps],
-        #                                                 actions =b_actions[ep_idx,t+args.nsteps],
-        #                                                 avail_actions= b_avail_actions[ep_idx,t+args.nsteps] )
-        #                 # print("action_value_t_n",action_value_t_n.shape)
-        #                 # print("b_actions[ep_idx,t+args.nsteps]",b_actions[ep_idx,t+args.nsteps].shape)
-        #                 action_value_t_n = torch.gather(action_value_t_n.squeeze(),dim=-1, index=b_actions[ep_idx,t+args.nsteps].unsqueeze(-1))
-        #                 return_t_n = return_t_n + args.gamma ** args.nsteps * action_value_t_n
-                        
-        #             else:
-        #                 return_t_n =  b_reward[ep_idx,t:]
-        #                 discounts = torch.tensor([args.gamma ** i for i in range(return_t_n.size(-1))])
-        #                 return_t_n = (return_t_n*discounts).sum(-1)
-        #                 return_t_n = return_t_n.expand(eval_env.n_agents)
-        #             # print("return_t_n",return_t_n.shape)
-        #             # print("return_lambda[ep_idx,t]",return_lambda[ep_idx,t].shape)
-        #             # print("return_t_n",return_t_n.shape)
-        #             # print("return_lambda[ep_idx,t]",return_lambda[ep_idx,t].shape)
-        #             return_lambda[ep_idx,t] = return_t_n.squeeze()
+            if args.use_tdlamda:
+                for ep_idx in range(return_lambda.size(0)):
+                    ep_len = b_mask[ep_idx].sum()
+                    last_return_lambda = 0
+                    for t in reversed(range(ep_len)):
+                        if t == (ep_len -1):
+                            next_action_value = 0
+                        else:
+                            next_action_value = target_critic(state = b_states[ep_idx,t+1],
+                                                            observations = b_obs[ep_idx,t+1],
+                                                            actions =b_actions[ep_idx,t+1],
+                                                            avail_actions= b_avail_actions[ep_idx,t+1] )
+                            next_action_value = torch.gather(next_action_value,dim=-1, index=b_actions[ep_idx,t+1].unsqueeze(-1)).squeeze()
+                            # next_action_value, _ = next_action_value.max(dim=-1)
+                    
+                        return_lambda[ep_idx,t] =last_return_lambda = b_reward[ep_idx,t] + args.gamma * (args.td_lambda * last_return_lambda + (1-args.td_lambda)*next_action_value)
+            else: 
+                for ep_idx in range(return_lambda.size(0)):
+                    ep_len = b_mask[ep_idx].sum()
+                    for t in range(ep_len):
+                        if t < (ep_len - args.nsteps):
+                            return_t_n =  b_reward[ep_idx,t:t+args.nsteps]
+                            discounts = torch.tensor([args.gamma ** i for i in range(return_t_n.size(-1))])
+                            return_t_n = (return_t_n*discounts).sum(-1)
+                            action_value_t_n = target_critic(state = b_states[ep_idx,t+args.nsteps],
+                                                            observations = b_obs[ep_idx,t+args.nsteps],
+                                                            actions =b_actions[ep_idx,t+args.nsteps],
+                                                            avail_actions= b_avail_actions[ep_idx,t+args.nsteps] )
+                            action_value_t_n = torch.gather(action_value_t_n,dim=-1, index=b_actions[ep_idx,t+args.nsteps].unsqueeze(-1)).squeeze()
+                            return_t_n = return_t_n + args.gamma ** args.nsteps * action_value_t_n
+                            
+                        else:
+                            return_t_n =  b_reward[ep_idx,t:]
+                            discounts = torch.tensor([args.gamma ** i for i in range(return_t_n.size(-1))])
+                            return_t_n = (return_t_n*discounts).sum(-1)
+                            return_t_n = return_t_n.expand(eval_env.n_agents)
+                        return_lambda[ep_idx,t] = return_t_n
 
 
 
