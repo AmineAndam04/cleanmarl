@@ -428,6 +428,7 @@ if __name__ == "__main__":
         num_episodes += args.num_envs
         ep_rewards.extend(ep_reward)
         ep_lengths.extend(ep_length)
+        ##! This should be inside
         if args.env_type == 'smaclite':
             ep_stats.extend(infos) ## Add battle won for smaclite
 

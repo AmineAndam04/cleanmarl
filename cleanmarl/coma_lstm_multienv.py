@@ -1,13 +1,15 @@
 # TODO : accumulate gradient
-import random
+##What worked: unormalize reward and normalize advantage
 import torch
 import tyro
 import datetime
+import random 
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 from dataclasses import dataclass
 import torch.nn.functional as F
+from multiprocessing import Pipe, Process
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
 from torch.distributions.categorical import Categorical
@@ -31,13 +33,13 @@ class Args:
     """ Number of hidden layers of actor network"""
     critic_hidden_dim: int = 128
     """ Hidden dimension of critic network"""
-    critic_num_layers: int = 1
+    critic_num_layers: int = 2
     """ Number of hidden layers of critic network"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate_actor: float =  0.0005
+    learning_rate_actor: float =  0.00005
     """ Learning rate"""
-    learning_rate_critic: float =  0.0005
+    learning_rate_critic: float =  0.00005
     """ Learning rate"""
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
@@ -54,20 +56,21 @@ class Args:
     polyak: float = 1
     """ Polyak coefficient when using polyak averaging for target network update"""
     eval_steps: int = 10
-    """ Evaluate the policy each «eval_steps» updates"""
-    num_eval_ep: int = 5
+    """ Evaluate the policy each «eval_steps» steps"""
+    num_eval_ep: int = 10
     """ Number of evaluation episodes"""
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.001
     """ Entropy coefficient """
     nsteps : int = 3
-    tbptt:int = 1
-    start_e: float = 0.5
+
+    start_e: float = 0.1
     """ The starting value of epsilon, for exploration"""
     end_e: float = 0.002
     """ The end value of epsilon, for exploration"""
-    exploration_fraction: float = 100
+    exploration_fraction: float = 750
     """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
     seed: int  = 1
+    tbptt:int = 1
 
 class  RolloutBuffer():
     def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False):
@@ -106,7 +109,7 @@ class  RolloutBuffer():
             mu = np.mean(reward[mask] )
             std = np.std(reward[mask] )
             reward[mask.bool()] = (reward[mask] - mu) /(std + 1e-6)
-        # print("reward",reward)
+        self.episodes = [None] * self.buffer_size
         return (
             torch.from_numpy(obs).float(),
             torch.from_numpy(actions).long(),
@@ -212,6 +215,8 @@ class Critic(nn.Module):
 
 
 
+
+
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
@@ -233,18 +238,69 @@ def soft_update(target_net, critic_net, polyak):
 
 def get_coma_critic_input_dim(env):
     critic_input_dim = 0
-    # if isinstance(env,PettingZooWrapper): # we don't have a true environment state.
-    #     critic_input_dim += env.get_obs_size()
-    # elif isinstance(env,SMACliteWrapper):
-    #     critic_input_dim += env.get_obs_size() + env.get_state_size()
-    # else:
-    #     raise NotImplementedError(f"get_coma_critic_input_dim not implemented for type {type(env).__name__}")
-    # critic_input_dim += env.get_action_size() - 1
     critic_input_dim = env.get_obs_size() + env.get_state_size() +  (env.n_agents - 1)*env.get_action_size()
-    # else:
-    print("critic_input_dim",critic_input_dim)
     return critic_input_dim
+class CloudpickleWrapper:
+    """
+    Uses cloudpickle to serialize contents (otherwise multiprocessing tries to use pickle)
+    """
+    def __init__(self, env):
+        self.env = env
 
+    def __getstate__(self):
+        import cloudpickle
+        return cloudpickle.dumps(self.env)
+
+    def __setstate__(self, env):
+        import pickle
+        self.env = pickle.loads(env)
+
+def env_worker(conn,env_serialized):
+    env = env_serialized.env
+    while True:
+        task,content = conn.recv()
+        if task == "reset":
+            obs,_  = env.reset(seed=random.randint(0, 100000))
+            avail_actions = env.get_avail_actions()
+            state = env.get_state()
+            content = {
+                "obs": obs,
+                "avail_actions": avail_actions,
+                "state":state
+            }
+            conn.send(content)
+        elif task == "get_env_info":
+            content = {
+                "obs_size":env.get_obs_size(),
+                "action_size":env.get_action_size(),
+                "n_agents": env.n_agents,
+                "state_size": env.get_state_size()
+            }
+            conn.send(content)
+        elif task == 'sample':
+            actions = env.sample()
+            content = {
+                'actions':actions
+            }
+            conn.send(content)
+        elif task == 'step':
+            next_obs, reward, done, truncated, infos = env.step(content)
+            avail_actions = env.get_avail_actions()
+            state = env.get_state()
+            content = {
+                "next_obs":next_obs,
+                "reward":reward,
+                "done":done,
+                "truncated":truncated,
+                "infos":infos,
+                "avail_actions":avail_actions,
+                "next_state": state 
+            }
+            conn.send(content)
+        elif task == "close":
+            env.close()
+            conn.close()
+            break
 
 if __name__ == "__main__":
     ## what if we periodically empty the replay buffer
@@ -255,11 +311,25 @@ if __name__ == "__main__":
     torch.manual_seed(seed)
     ## import the environment 
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
-    env = environment(env_type= args.env_type,
+    ## Create the pipes to communicate between the main process (COMA algorithm) and child processes (envs)
+    conns = [Pipe() for _ in range(args.batch_size)]
+    coma_conns, env_conns = zip(*conns)
+    envs = [CloudpickleWrapper(environment(env_type= args.env_type,
                       env_name=args.env_name,
                       env_family=args.env_family,
                       agent_ids=args.agent_ids,
-                      kwargs=kwargs)
+                      kwargs=kwargs)) for _ in range(args.batch_size)]
+    processes = [Process(
+        target=env_worker,
+        args=(env_conns[i],envs[i]))
+        for i in range(args.batch_size)]
+    for process in processes:
+            process.daemon = True
+            process.start()
+    coma_conns[0].send(("get_env_info", None))
+    env_info = coma_conns[0].recv()
+    
+    
     eval_env = environment(env_type= args.env_type,
                       env_name=args.env_name,
                       env_family=args.env_family,
@@ -268,25 +338,25 @@ if __name__ == "__main__":
     
     ## Initialize the actor, critic and target-critic networks
     actor = Actor(
-        input_dim=env.get_obs_size(),
+        input_dim=eval_env.get_obs_size(),
         hidden_dim=args.actor_hidden_dim,
-        output_dim=env.get_action_size()
+        output_dim=eval_env.get_action_size()
     )
-    print("env.get_obs_size()",env.get_obs_size())
-    critic_input_dim = get_coma_critic_input_dim(env)
+    print("env.get_obs_size()",eval_env.get_obs_size())
+    critic_input_dim = get_coma_critic_input_dim(eval_env)
     critic = Critic(
         input_dim=critic_input_dim,
         hidden_dim=args.critic_hidden_dim,
         num_layer=args.critic_num_layers,
-        output_dim=env.get_action_size(),
-        num_agents =  env.n_agents
+        output_dim=eval_env.get_action_size(),
+        num_agents =  eval_env.n_agents
     )
     target_critic = Critic(
         input_dim=critic_input_dim,
         hidden_dim=args.critic_hidden_dim,
         num_layer=args.critic_num_layers,
-        output_dim=env.get_action_size(),
-        num_agents =  env.n_agents
+        output_dim=eval_env.get_action_size(),
+        num_agents =  eval_env.n_agents
     )
     soft_update(
             target_net=target_critic,
@@ -299,73 +369,118 @@ if __name__ == "__main__":
 
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
-    writer = SummaryWriter(f"runs/COMA-LSTM-{run_name}")
+    writer = SummaryWriter(f"runs/COMA-{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     rb = RolloutBuffer( buffer_size=args.batch_size,
-                        obs_space= env.get_obs_size(),
-                        state_space=env.get_state_size(),
-                        action_space=env.get_action_size(),
-                        num_agents= env.n_agents,
+                        obs_space= eval_env.get_obs_size(),
+                        state_space=eval_env.get_state_size(),
+                        action_space=eval_env.get_action_size(),
+                        num_agents= eval_env.n_agents,
                         normalize_reward= args.normalize_reward)
     step = 0
-    total_updates = 0
-    total_episodes = 0
+    total_nepisodes = 0
     training_step = 0
     while step < args.total_timesteps:
-        ep_rewards = []
-        ep_lengths = []
-        ep_stats = []
-        num_episode = 0
-        while num_episode < args.batch_size:
-            epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction, training_step)
-            episode = {"obs": [],"actions":[],"reward":[],"states":[],"done":[],"avail_actions":[]}
-            obs, _ = env.reset()
-            ep_reward, ep_length = 0,0
-            done, truncated = False, False
-            h = None
-            while not done and not truncated:
-                obs = torch.from_numpy(obs).to(args.device).float()
-                avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
-                state = torch.from_numpy(env.get_state()).to(args.device).float()
-                with torch.no_grad():
-                    actions,h = actor.act(obs,h=h,eps=epsilon,avail_action=avail_action)
-                next_obs, reward, done, truncated, infos = env.step(actions)
-                ep_reward += reward
-                ep_length += 1
-                step +=1
-
-                episode["obs"].append(obs)
-                episode["actions"].append(actions)
-                episode["reward"].append(reward)
-                episode["done"].append(done)
-                episode["avail_actions"].append(avail_action)
-                episode["states"].append(state)
-                
-                obs = next_obs 
-            # obs = torch.from_numpy(obs).to(args.device).float()
-            # avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
-            # state = torch.from_numpy(env.get_state()).to(args.device).float()
-            # episode["obs"].append(obs)
-            # episode["avail_actions"].append(avail_action)
-            # episode["states"].append(state)
-            
-            rb.add(episode)
-            ep_rewards.append(ep_reward)
-            ep_lengths.append(ep_length)
-            if args.env_type == 'smaclite':
-                ep_stats.append(infos) ## Add battle won for smaclite
-            num_episode += 1
+        epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction, training_step)
+        episodes = [{"obs": [],"actions":[],"reward":[],"states":[],"done":[],"avail_actions":[]}
+                for _ in range(args.batch_size)]
         
+        for coma_conn in coma_conns:
+            coma_conn.send(("reset",None))
+        
+        contents = [coma_conn.recv() for coma_conn in coma_conns]
+        obs  = np.stack([content["obs"] for content in contents],axis=0)
+        avail_action = np.stack([content["avail_actions"] for content in contents],axis=0)
+        state  = np.stack([content["state"] for content in contents])
+        alive_envs = list(range(args.batch_size))
+        
+        ep_reward, ep_length,ep_stat = [0]* args.batch_size,[0]* args.batch_size,[0]* args.batch_size
+        h = None
+        
+        while len(alive_envs) > 0:
+            obs = torch.from_numpy(obs).to(args.device).float()
+            avail_action = torch.tensor(avail_action, dtype=torch.bool, device=args.device)
+            state = torch.from_numpy(state).to(args.device).float()
+
+            with torch.no_grad():
+                obs = obs.reshape(len(alive_envs)*eval_env.n_agents,-1)
+                avail_action = avail_action.reshape(len(alive_envs)*eval_env.n_agents,-1)
+                if h is None:
+                    alive_h = None
+                else:
+                    alive_h = h.reshape(args.batch_size,eval_env.n_agents,-1)
+                    alive_h = alive_h[alive_envs].reshape(len(alive_envs)*eval_env.n_agents,-1)
+                    # print("alive_h",alive_h.shape)
+                    # print("obs",obs.shape)
+                actions,alive_h = actor.act(obs,h=alive_h,eps=epsilon,avail_action=avail_action)
+                if h is None:
+                    h = alive_h
+                else:
+                    h = h.reshape(args.batch_size,eval_env.n_agents,-1)
+                    alive_h = alive_h.reshape(len(alive_envs),eval_env.n_agents,-1)
+                    h[alive_envs] = alive_h
+                    h = h.reshape(args.batch_size*eval_env.n_agents,-1)
+                # print("actions before",actions.shape)
+                obs = obs.reshape(len(alive_envs),eval_env.n_agents,-1)
+                avail_action = avail_action.reshape(len(alive_envs),eval_env.n_agents,-1)
+                actions = actions.reshape(len(alive_envs),eval_env.n_agents)
+                # print("actions before",actions.shape)
+            for i,j in enumerate(alive_envs):
+                coma_conns[j].send(("step",actions[i]))
+            
+            contents = [coma_conns[i].recv() for i in alive_envs]
+
+            next_obs =[content["next_obs"] for content in contents]
+            reward = [content["reward"]   for content in contents]
+            done = [content["done"]     for content in contents]
+            truncated = [content["truncated"]     for content in contents]
+            infos = [content.get("infos") for content in contents]
+            next_avail_action = [content["avail_actions"] for content in contents]
+            next_state = [content["next_state"]for content in contents]
+            for i,j in enumerate(alive_envs):
+                episodes[j]["obs"].append(obs[i])
+                episodes[j]["actions"].append(actions[i])
+                episodes[j]["reward"].append(reward[i])
+                episodes[j]["states"].append(state[i])
+                episodes[j]["done"].append(done[i])
+                episodes[j]["avail_actions"].append(avail_action[i])
+                ep_reward[j] += reward[i]
+                ep_length[j] += 1
+            
+            step += len(alive_envs)
+
+            
+            obs = []
+            state = []
+            avail_action = []
+            
+            for i,j in enumerate(alive_envs[:]):
+                if done[i] or truncated[i]:
+                    alive_envs.remove(j)
+                    rb.add(episodes[j])
+                    episodes[j] = dict()
+                    if args.env_type == 'smaclite':
+                        ep_stat[j] = infos[i]
+                else:
+                    obs.append(next_obs[i]) 
+                    avail_action.append(next_avail_action[i]) 
+                    state.append(next_state[i])
+            if obs:
+                obs = np.stack(obs,axis=0)
+                avail_action = np.stack(avail_action,axis=0)
+                state = np.stack(state,axis=0)
+            
+        
+        total_nepisodes += args.batch_size
         ## logging
-        writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
-        writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
-        total_episodes += args.batch_size
+        writer.add_scalar("rollout/ep_reward", np.mean(ep_reward), step)
+        writer.add_scalar("rollout/ep_length",np.mean(ep_length),step)
         if args.env_type == 'smaclite':
-            writer.add_scalar("rollout/battle_won",np.mean(np.mean([info["battle_won"] for info in ep_stats])), step)
+            writer.add_scalar("rollout/battle_won",np.mean(np.mean([info["battle_won"] for info in ep_stat])), step)
         b_obs,b_actions,b_reward,b_states,b_avail_actions,b_done,b_mask = rb.get_batch()
         ### 1. Compute TD(λ) from "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
         with torch.no_grad():
@@ -381,9 +496,10 @@ if __name__ == "__main__":
                                                         observations = b_obs[ep_idx,t+1],
                                                         actions =b_actions[ep_idx,t+1],
                                                         avail_actions= b_avail_actions[ep_idx,t+1] )
+                        
                         next_action_value = torch.gather(next_action_value,dim=-1, index=b_actions[ep_idx,t+1].unsqueeze(-1)).squeeze()
                         # next_action_value, _ = next_action_value.max(dim=-1)
-                        # print( b_reward[ep_idx,t] )
+                        
                         # print(last_return_lambda)
                     return_lambda[ep_idx,t] =last_return_lambda = b_reward[ep_idx,t] + args.gamma * (args.td_lambda * last_return_lambda + (1-args.td_lambda)*next_action_value)
         # with torch.no_grad():
@@ -399,17 +515,21 @@ if __name__ == "__main__":
         #                                                 observations = b_obs[ep_idx,t+args.nsteps],
         #                                                 actions =b_actions[ep_idx,t+args.nsteps],
         #                                                 avail_actions= b_avail_actions[ep_idx,t+args.nsteps] )
-        #                 action_value_t_n = torch.gather(action_value_t_n,dim=-1, index=b_actions[ep_idx,t+args.nsteps].unsqueeze(-1)).squeeze()
+        #                 # print("action_value_t_n",action_value_t_n.shape)
+        #                 # print("b_actions[ep_idx,t+args.nsteps]",b_actions[ep_idx,t+args.nsteps].shape)
+        #                 action_value_t_n = torch.gather(action_value_t_n.squeeze(),dim=-1, index=b_actions[ep_idx,t+args.nsteps].unsqueeze(-1))
         #                 return_t_n = return_t_n + args.gamma ** args.nsteps * action_value_t_n
                         
         #             else:
         #                 return_t_n =  b_reward[ep_idx,t:]
         #                 discounts = torch.tensor([args.gamma ** i for i in range(return_t_n.size(-1))])
         #                 return_t_n = (return_t_n*discounts).sum(-1)
-        #                 return_t_n = return_t_n.expand(env.n_agents)
+        #                 return_t_n = return_t_n.expand(eval_env.n_agents)
         #             # print("return_t_n",return_t_n.shape)
         #             # print("return_lambda[ep_idx,t]",return_lambda[ep_idx,t].shape)
-        #             return_lambda[ep_idx,t] = return_t_n
+        #             # print("return_t_n",return_t_n.shape)
+        #             # print("return_lambda[ep_idx,t]",return_lambda[ep_idx,t].shape)
+        #             return_lambda[ep_idx,t] = return_t_n.squeeze()
 
 
 
@@ -447,11 +567,11 @@ if __name__ == "__main__":
         truncated_actor_loss = None
         actor_loss_denominator = None
         for t in range(b_obs.size(1)):
-            b_obs_t = b_obs[:,t].reshape(args.batch_size*env.n_agents,-1)
-            b_avail_actions_t = b_avail_actions[:,t].reshape(args.batch_size*env.n_agents,-1)
+            b_obs_t = b_obs[:,t].reshape(args.batch_size*eval_env.n_agents,-1)
+            b_avail_actions_t = b_avail_actions[:,t].reshape(args.batch_size*eval_env.n_agents,-1)
 
             pi,h = actor.logits( b_obs_t,h,epsilon,b_avail_actions_t) 
-            pi = pi.reshape(args.batch_size,env.n_agents,-1)
+            pi = pi.reshape(args.batch_size,eval_env.n_agents,-1)
             log_pi = torch.log(pi + 1e-8)
             entropy_loss = -(pi*log_pi).sum(dim=-1)[b_mask[:,t]]
             entropy_loss = entropy_loss.sum()
@@ -492,8 +612,8 @@ if __name__ == "__main__":
         writer.add_scalar("train/entropy", np.sum(entropies)/b_mask.sum(), step)
         writer.add_scalar("train/epsilon", epsilon, step)
         writer.add_scalar("train/train_steps", training_step, step)
-        total_updates+= 1
-        if total_updates % args.eval_steps == 0:
+
+        if training_step % args.eval_steps == 0:
             eval_obs,_ = eval_env.reset()
             eval_ep = 0
             eval_ep_reward = []
