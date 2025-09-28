@@ -11,14 +11,15 @@ from dataclasses import dataclass
 import torch.nn.functional as F
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
+from env.lbf import LBFWrapper
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Args:
-    env_type: str = "smaclite"
+    env_type: str = "lbf"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "3m"
+    env_name: str = "Foraging-8x8-2p-4f-v3"
     """ Name of the environment"""
     env_family: str ="mpe"
     """ Env family when using pz"""
@@ -204,6 +205,8 @@ def environment(env_type, env_name, env_family,agent_ids,kwargs):
         env = PettingZooWrapper(family = env_family, env_name = env_name,agent_ids=agent_ids,**kwargs)
     elif env_type == 'smaclite':
         env = SMACliteWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
+    elif env_type == 'lbf':
+        env = LBFWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
     
     return env
 def norm_d(grads, d):

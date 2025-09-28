@@ -10,20 +10,21 @@ import torch.nn.functional as F
 from multiprocessing import Pipe, Process
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
+from env.lbf import LBFWrapper
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Args:
-    env_type: str = "smaclite"
+    env_type: str = "lbf"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "3m"
+    env_name: str = "Foraging-8x8-2p-4f-v3"
     """ Name of the environment"""
     env_family: str ="mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
-    batch_size: int = 5
+    batch_size: int = 3
     """ Number of episodes to collect in each rollout"""
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
@@ -35,19 +36,19 @@ class Args:
     """ Number of hidden layers of critic network"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate_actor: float =  0.0005
+    learning_rate_actor: float =  0.0001
     """ Learning rate for the actor"""
-    learning_rate_critic: float =  0.0005
+    learning_rate_critic: float =  0.0001
     """ Learning rate for the critic"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 500000
     """ Total steps in the environment during training"""
     gamma: float = 0.99
     """ Discount factor"""
-    td_lambda: float = 0.99
+    td_lambda: float = 0.8
     """ TD(λ) discount factor"""
-    normalize_reward: bool = False
+    normalize_reward: bool = True
     """ Normalize the rewards if True"""
-    target_network_update_freq: int = 200
+    target_network_update_freq: int = 30
     """ Update the target network each target_network_update_freq» step in the environment"""
     polyak: float = 1
     """ Polyak coefficient when using polyak averaging for target network update"""
@@ -55,19 +56,19 @@ class Args:
     """ Evaluate the policy each «eval_steps» training steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0
     """ Entropy coefficient """
     use_tdlamda: bool = True
     """ Use TD(λ) as a target for the critic, if False use n-step returns (n=nsteps) """
-    nsteps : int = 1
+    nsteps : int = 10
     """ number of stpes when using n-step returns as a target for the critic"""
-    start_e: float = 0.5
+    start_e: float = 0
     """ The starting value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
-    end_e: float = 0.002
+    end_e: float = 0
     """ The end value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
-    exploration_fraction: float = 750
+    exploration_fraction: float = 1
     """ The number of training steps it takes from to go from start_e to  end_e"""
-    clip_gradients: int = 1
+    clip_gradients: int = 0.5
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     seed: int  = 1
     """ Random seed"""
@@ -203,6 +204,8 @@ def environment(env_type, env_name, env_family,agent_ids,kwargs):
         env = PettingZooWrapper(family = env_family, env_name = env_name,agent_ids=agent_ids,**kwargs)
     elif env_type == 'smaclite':
         env = SMACliteWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
+    elif env_type == 'lbf':
+        env = LBFWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
     
     return env
 def norm_d(grads, d):
@@ -318,7 +321,9 @@ if __name__ == "__main__":
         num_layer=args.actor_num_layers,
         output_dim=eval_env.get_action_size()
     )
+    print("get_obs_size()",eval_env.get_obs_size())
     critic_input_dim = get_coma_critic_input_dim(eval_env)
+    print("critic_input_dim",critic_input_dim)
     critic = Critic(
         input_dim=critic_input_dim,
         hidden_dim=args.critic_hidden_dim,
