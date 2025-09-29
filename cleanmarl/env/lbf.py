@@ -7,14 +7,15 @@ from gymnasium.wrappers import TimeLimit
 from gymnasium.spaces import Tuple,flatdim
 
 class LBFWrapper(CommonInterface):
-    def __init__(self,map_name, seed=0, time_limit=150, agent_ids=False,**kwargs):
+    def __init__(self,map_name, reward_aggr='sum',seed=0, time_limit=150, agent_ids=False,**kwargs):
         super().__init__()
-        self.env = gym.make(map_name, **kwargs)
+        self.env = gym.make(map_name,max_episode_steps=time_limit, **kwargs)
         self.env = TimeLimit(self.env, max_episode_steps=time_limit)
         self.agent_ids = agent_ids
         self.n_agents = self.env.unwrapped.n_agents
         self.agents = list(range(self.n_agents))
         self.episode_limit = time_limit
+        self.reward_aggr = reward_aggr
         self.action_space = Tuple(
             tuple([self.env.action_space[agent] for agent in self.agents]))
         self.longest_action_space = max(self.env.action_space, key=lambda x: x.n)
@@ -23,13 +24,21 @@ class LBFWrapper(CommonInterface):
         """Returns obss, reward, terminated, truncated, info"""
         actions = [int(act) for act in actions]
         obs, reward, terminated, truncated, info = self.env.step(actions)
+        self.current_step += 1
         obs = self.process_obs(obs)
-        reward = np.sum(reward)
-        return obs, reward, terminated, truncated, info
+        if self.reward_aggr == "sum":
+            reward = np.sum(reward)
+        elif self.reward_aggr == "mean":
+            reward = np.mean(reward)
+
+        if terminated and self.current_step == self.env.unwrapped._max_episode_steps:
+            truncated = True
+        return obs, np.array(reward), terminated, truncated, info
     def reset(self, seed=None):
         """ 
         args will be used when the seed is specified 
         """
+        self.current_step = 0
         obs, _ = self.env.reset(seed = seed)
         obs = self.process_obs(obs)
         return obs, {}

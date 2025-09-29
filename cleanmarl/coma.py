@@ -319,6 +319,9 @@ if __name__ == "__main__":
                 episode["done"].append(done)
                 episode["avail_actions"].append(avail_action)
                 episode["states"].append(state)
+                print("state",state.shape)
+                print("obs",obs.shape)
+                print("actions",actions.shape)
                 
                 obs = next_obs 
             

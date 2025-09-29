@@ -10,14 +10,15 @@ import torch.nn.functional as F
 from multiprocessing import Pipe, Process
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
+from env.lbf import LBFWrapper
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Args:
-    env_type: str = "smaclite"
+    env_type: str = "lbf"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "3m"
+    env_name: str = "Foraging-8x8-2p-2f-coop"
     """ Name of the environment"""
     env_family: str ="mpe"
     """ Env family when using pz"""
@@ -25,7 +26,7 @@ class Args:
     """ Include id (one-hot vector) at the agent of the observations"""
     batch_size: int = 5
     """ Number of episodes to collect in each rollout"""
-    actor_hidden_dim: int = 32
+    actor_hidden_dim: int = 64
     """ Hidden dimension of actor network"""
     actor_num_layers: int = 1
     """ Number of hidden layers of actor network"""
@@ -43,13 +44,13 @@ class Args:
     """ Total steps in the environment during training"""
     gamma: float = 0.99
     """ Discount factor"""
-    td_lambda: float = 0.99
+    td_lambda: float = 0.8
     """ TD(λ) discount factor"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
-    target_network_update_freq: int = 400
+    target_network_update_freq: int = 1
     """ Update the target network each target_network_update_freq» step in the environment"""
-    polyak: float = 1
+    polyak: float = 0.05
     """ Polyak coefficient when using polyak averaging for target network update"""
     eval_steps: int = 10
     """ Evaluate the policy each «eval_steps» training steps"""
@@ -65,11 +66,11 @@ class Args:
     """ The starting value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
     end_e: float = 0.002
     """ The end value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
-    exploration_fraction: float = 100
+    exploration_fraction: float = 750
     """ The number of training steps it takes from to go from start_e to  end_e"""
     clip_gradients: int = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
-    tbptt:int = 1
+    tbptt:int = 3
     """Chunck size for Truncated Backpropagation Through Time tbptt"""
     seed: int  = 1
     """ Random seed"""
@@ -205,6 +206,8 @@ def environment(env_type, env_name, env_family,agent_ids,kwargs):
         env = PettingZooWrapper(family = env_family, env_name = env_name,agent_ids=agent_ids,**kwargs)
     elif env_type == 'smaclite':
         env = SMACliteWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
+    elif env_type == 'lbf':
+        env = LBFWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
     
     return env
 def norm_d(grads, d):
@@ -538,6 +541,7 @@ if __name__ == "__main__":
             coma_baseline = (pi * q_values).sum(dim = -1)
             current_q =  torch.gather(q_values,dim=-1, index=b_actions[:,t].unsqueeze(-1)).squeeze()
             advantage = (current_q - coma_baseline).detach()
+            print(t,advantage)
             if b_actions[:,t].sum() > eval_env.n_agents:
                 advantage = (advantage - advantage[b_mask[:,t]].mean())/(advantage[b_mask[:,t]].std() + 1e-8)
             log_pi = torch.gather(log_pi,dim=-1, index=b_actions[:,t].unsqueeze(-1)).squeeze()
@@ -569,7 +573,7 @@ if __name__ == "__main__":
         writer.add_scalar("train/critc_loss", cr_loss, step)
         writer.add_scalar("train/actor_loss", actor_losses/b_mask.sum(), step)
         writer.add_scalar("train/entropy", entropies/b_mask.sum(), step)
-        writer.add_scalar("train/ciritc_gradients", critc_gradients, step)
+        writer.add_scalar("train/critc_gradients", critc_gradients, step)
         writer.add_scalar("train/actor_gradients", actor_gradients/b_obs.size(1), step)
         writer.add_scalar("train/epsilon", epsilon, step)
         writer.add_scalar("train/train_steps", training_step, step)

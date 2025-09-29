@@ -3,6 +3,7 @@
         "Cloudpickle",
         "dtype",
         "flatdim",
+        "lbforaging",
         "pettingzoo",
         "Qnetwrok",
         "unsqueeze"

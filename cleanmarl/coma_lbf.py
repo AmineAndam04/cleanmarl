@@ -1,3 +1,9 @@
+## TO READ
+## This was created specifically to test different configs to see if COMA can play lbforaging 
+## We tested so far the following:
+##                      (1) - use r+ V(s_T) when we truncated at T (done vs truncated)
+##                      (2) - we support individual rewards (i.e. we use reward_aggr=None, see the LBFWrapper)
+
 import torch
 import tyro
 import datetime
@@ -34,43 +40,43 @@ class Args:
     """ Hidden dimension of critic network"""
     critic_num_layers: int = 1
     """ Number of hidden layers of critic network"""
-    optimizer: str = "Adam"
+    optimizer: str = "AdamW"
     """ The optimizer"""
-    learning_rate_actor: float =  0.0003
+    learning_rate_actor: float =  0.00025
     """ Learning rate for the actor"""
-    learning_rate_critic: float =  0.0003
+    learning_rate_critic: float =  0.000025
     """ Learning rate for the critic"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 2500000
     """ Total steps in the environment during training"""
     gamma: float = 0.99
     """ Discount factor"""
     td_lambda: float = 0.8
     """ TD(λ) discount factor"""
-    normalize_reward: bool = False
+    normalize_reward: bool = True
     """ Normalize the rewards if True"""
     target_network_update_freq: int = 1
     """ Update the target network each target_network_update_freq» step in the environment"""
-    polyak: float = 0.05
+    polyak: float = 1
     """ Polyak coefficient when using polyak averaging for target network update"""
-    eval_steps: int = 10
+    eval_steps: int = 50
     """ Evaluate the policy each «eval_steps» training steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
-    entropy_coef: float = 0
+    entropy_coef: float = 0.001
     """ Entropy coefficient """
     use_tdlamda: bool = False
     """ Use TD(λ) as a target for the critic, if False use n-step returns (n=nsteps) """
-    nsteps : int = 1
+    nsteps : int = 10
     """ number of stpes when using n-step returns as a target for the critic"""
-    start_e: float = 0.5
+    start_e: float = 0
     """ The starting value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
-    end_e: float = 0.002
+    end_e: float = 0
     """ The end value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
-    exploration_fraction: float = 1000
+    exploration_fraction: float = 1
     """ The number of training steps it takes from to go from start_e to  end_e"""
     clip_gradients: int = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
-    seed: int  = 1
+    seed: int  = 0
     """ Random seed"""
     device: str ="cpu"
     """ Device (cpu, gpu, mps)"""
@@ -95,7 +101,7 @@ class  RolloutBuffer():
         obs = np.zeros((self.buffer_size,max_length,self.num_agents,self.obs_space))
         avail_actions = np.zeros((self.buffer_size,max_length,self.num_agents,self.action_space))
         actions = np.zeros((self.buffer_size,max_length,self.num_agents))
-        reward = np.zeros((self.buffer_size,max_length))
+        reward = np.zeros((self.buffer_size,max_length,self.num_agents))
         states = np.zeros((self.buffer_size,max_length,self.state_space))
         done = np.zeros((self.buffer_size,max_length))
         mask = torch.zeros(self.buffer_size, max_length,dtype=torch.bool)
@@ -205,7 +211,7 @@ def environment(env_type, env_name, env_family,agent_ids,kwargs):
     elif env_type == 'smaclite':
         env = SMACliteWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
     elif env_type == 'lbf':
-        env = LBFWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
+        env = LBFWrapper(map_name=env_name,reward_aggr=None,agent_ids=agent_ids,**kwargs)
     
     return env
 def norm_d(grads, d):
@@ -377,6 +383,11 @@ if __name__ == "__main__":
         state  = np.stack([content["state"] for content in contents])
         alive_envs = list(range(args.batch_size))      
         ep_reward, ep_length,ep_stat = [0]* args.batch_size,[0]* args.batch_size,[0]* args.batch_size
+        # For last action
+        is_truncated = [False]* args.batch_size
+        last_obs = np.zeros_like(obs)
+        last_avail_action = np.zeros_like(avail_action)
+        last_state = np.zeros_like(state)
         while len(alive_envs) > 0:
             obs = torch.from_numpy(obs).to(args.device).float()
             avail_action = torch.tensor(avail_action, dtype=torch.bool, device=args.device)
@@ -400,7 +411,7 @@ if __name__ == "__main__":
                 episodes[j]["states"].append(state[i])
                 episodes[j]["done"].append(done[i])
                 episodes[j]["avail_actions"].append(avail_action[i])
-                ep_reward[j] += reward[i]
+                ep_reward[j] += np.sum(reward[i])
                 ep_length[j] += 1
             
             step += len(alive_envs)
@@ -416,6 +427,12 @@ if __name__ == "__main__":
                     episodes[j] = dict()
                     if args.env_type == 'smaclite':
                         ep_stat[j] = infos[i]
+                    if truncated[i]:
+                        print("Truncated")
+                        is_truncated[j] = True
+                        last_obs[j] = next_obs[i]
+                        last_avail_action[j] = next_avail_action[i]
+                        last_state[j] = next_state[i]
                 else:
                     obs.append(next_obs[i]) 
                     avail_action.append(next_avail_action[i]) 
@@ -441,7 +458,18 @@ if __name__ == "__main__":
             if args.use_tdlamda:
                 for ep_idx in range(return_lambda.size(0)):
                     ep_len = b_mask[ep_idx].sum()
-                    last_return_lambda = 0
+                    if is_truncated[ep_idx]:
+                        last_obs_ep_idx = torch.from_numpy(last_obs[ep_idx]).to(args.device).float()
+                        last_state_ep_idx = torch.from_numpy(last_state[ep_idx]).to(args.device).float()
+                        last_avail_action_ep_idx = torch.tensor(last_avail_action[ep_idx], dtype=torch.bool, device=args.device)
+                        last_actions_ep_idx = actor.act(last_obs_ep_idx,eps=epsilon,avail_action=last_avail_action_ep_idx)
+                        last_return_lambda = target_critic(state = last_state_ep_idx,
+                                                            observations = last_obs_ep_idx,
+                                                            actions =last_actions_ep_idx,
+                                                            avail_actions= last_avail_action_ep_idx )
+                        last_return_lambda = torch.gather(last_return_lambda,dim=-1, index=last_actions_ep_idx.unsqueeze(-1)).squeeze()
+                    else: 
+                        last_return_lambda = 0
                     for t in reversed(range(ep_len)):
                         if t == (ep_len -1):
                             next_action_value = 0
@@ -456,21 +484,34 @@ if __name__ == "__main__":
             else: 
                 for ep_idx in range(return_lambda.size(0)):
                     ep_len = b_mask[ep_idx].sum()
+                    if is_truncated[ep_idx]:
+                        last_obs_ep_idx = torch.from_numpy(last_obs[ep_idx]).to(args.device).float()
+                        last_state_ep_idx = torch.from_numpy(last_state[ep_idx]).to(args.device).float()
+                        last_avail_action_ep_idx = torch.tensor(last_avail_action[ep_idx], dtype=torch.bool, device=args.device)
+                        last_actions_ep_idx = actor.act(last_obs_ep_idx,eps=epsilon,avail_action=last_avail_action_ep_idx)
+                        last_return_lambda = target_critic(state = last_state_ep_idx,
+                                                            observations = last_obs_ep_idx,
+                                                            actions =last_actions_ep_idx,
+                                                            avail_actions= last_avail_action_ep_idx )
+                        last_return_lambda = torch.gather(last_return_lambda,dim=-1, index=last_actions_ep_idx.unsqueeze(-1)).squeeze()
+                    else: 
+                        last_return_lambda = 0
                     for t in range(ep_len):
                         if t < (ep_len - args.nsteps):
-                            return_t_n =  b_reward[ep_idx,t:t+args.nsteps]
+                            return_t_n =  b_reward[ep_idx,t:t+args.nsteps,:]
                             discounts = torch.tensor([args.gamma ** i for i in range(return_t_n.size(-1))])
-                            return_t_n = (return_t_n*discounts).sum(-1)
+                            return_t_n = (return_t_n*discounts).sum(-2)
                             action_value_t_n = target_critic(state = b_states[ep_idx,t+args.nsteps],
                                                             observations = b_obs[ep_idx,t+args.nsteps],
                                                             actions =b_actions[ep_idx,t+args.nsteps],
                                                             avail_actions= b_avail_actions[ep_idx,t+args.nsteps] )
                             action_value_t_n = torch.gather(action_value_t_n,dim=-1, index=b_actions[ep_idx,t+args.nsteps].unsqueeze(-1)).squeeze()
+
                             return_t_n = return_t_n + args.gamma ** args.nsteps * action_value_t_n
                         else:
-                            return_t_n =  b_reward[ep_idx,t:]
+                            return_t_n =  b_reward[ep_idx,t:] + last_return_lambda
                             discounts = torch.tensor([args.gamma ** i for i in range(return_t_n.size(-1))])
-                            return_t_n = (return_t_n*discounts).sum(-1)
+                            return_t_n = (return_t_n*discounts).sum(-2)
                             return_t_n = return_t_n.expand(eval_env.n_agents)
                         return_lambda[ep_idx,t] = return_t_n
 
@@ -555,7 +596,7 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     actions = actor.act(eval_obs,avail_action=mask_eval)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
-                current_reward += reward
+                current_reward += np.sum(reward)
                 current_ep_length += 1
                 eval_obs = next_obs_
                 if done or truncated:
