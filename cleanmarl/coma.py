@@ -17,9 +17,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Args:
-    env_type: str = "lbf"
+    env_type: str = "smaclite"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "Foraging-8x8-2p-4f-v3"
+    env_name: str = "3m"
     """ Name of the environment"""
     env_family: str ="mpe"
     """ Env family when using pz"""
@@ -308,6 +308,7 @@ if __name__ == "__main__":
                 state = torch.from_numpy(env.get_state()).to(args.device).float()
                 with torch.no_grad():
                     actions = actor.act(obs,eps=epsilon,avail_action=avail_action)
+                print(actions)
                 next_obs, reward, done, truncated, infos = env.step(actions)
                 ep_reward += reward
                 ep_length += 1
