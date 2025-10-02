@@ -1,5 +1,8 @@
 
 
 ## TO day
-    - Check final bugs and errors.
-    - Try Optuna\Grid search but with parallel environments
+    - use a learning rate scheduler
+    - revise how you update the target networks in parallel environments
+    - Increase batch and mini-batch diversity
+    - Weight decay
+    - LBF and MADDPG may need n-step return updates

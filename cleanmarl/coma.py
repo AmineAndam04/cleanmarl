@@ -442,7 +442,7 @@ if __name__ == "__main__":
         writer.add_scalar("train/actor_loss", ac_loss.item(), step)
         writer.add_scalar("train/entropy", entropies, step)
         writer.add_scalar("train/actor_gradients", actor_gradients , step)
-        writer.add_scalar("train/critc_gradients", critc_gradients, step)
+        writer.add_scalar("train/critic_gradients", critc_gradients, step)
         writer.add_scalar("train/epsilon", epsilon, step)
         writer.add_scalar("train/train_steps", training_step, step)
 
