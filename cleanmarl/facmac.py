@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import copy
 from dataclasses import dataclass
 import tyro
 import random 
@@ -9,6 +10,7 @@ from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
 from env.lbf import LBFWrapper
 import torch.nn.functional as F
+from torch.distributions.categorical import Categorical
 import datetime
 from torch.utils.tensorboard import SummaryWriter
 
@@ -31,7 +33,7 @@ class Args:
     """ Batch size"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
-    actor_hidden_dim: int = 32
+    actor_hidden_dim: int = 64
     """ Hidden dimension of actor network"""
     actor_num_layers: int = 1
     """ Number of hidden layers of actor network"""
@@ -39,13 +41,15 @@ class Args:
     """ Hidden dimension of critic network"""
     critic_num_layers: int = 1
     """ Number of hidden layers of critic network"""
+    hyper_dim: int = 32
+    """ Hidden dimension of hyper-network"""
     train_freq: int = 1
     """ Train the network each «train_freq» step in the environment"""
-    optimizer: str = "Adam"
+    optimizer: str = "AdamW"
     """ The optimizer"""
-    learning_rate_actor: float =  0.0001
+    learning_rate_actor: float =  0.00025
     """ Learning rate for the actor"""
-    learning_rate_critic: float =  0.0001
+    learning_rate_critic: float =  0.00025
     """ Learning rate for the critic"""
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
@@ -63,8 +67,14 @@ class Args:
     """ Device (cpu, gpu, mps)"""
     seed: int  = 42
     """ Random seed"""
-    clip_gradients: int = 1
+    clip_gradients: int = 0.5
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    start_e: float = 0.5
+    """ The starting value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
+    end_e: float = 0.002
+    """ The end value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
+    exploration_fraction: float = 100000
+    """ The number of training steps it takes from to go from start_e to  end_e"""
 
 
 
@@ -78,31 +88,27 @@ class Actor(nn.Module):
             self.layers.append(
                 nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
             )
-        self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
-        
-
-    
-    def act(self,x,avail_action=None,hard=False,printit= False):
-        x = self.logits(x,avail_action,printit)
-        actions = F.gumbel_softmax(logits=x,hard=hard)
+        self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))    
+    def act(self,x,avail_action,hard=False,eps=0):
+        x = self.logits(x,avail_action)
+        if eps>0 :
+            masked_eps = (avail_action)* (eps/avail_action.sum(dim=-1,keepdim=True))
+            probs = (1-eps)*F.gumbel_softmax(logits=x) + masked_eps
+            distribution = Categorical(probs)
+            actions = distribution.sample()
+        else:
+            actions = F.gumbel_softmax(logits=x,hard=hard)
         return actions
-    def logits(self,x,avail_action=None,printit=False):
+    def logits(self,x,avail_action=None):
         for layer in self.layers:
             x = layer(x)
-            if printit:
-                print(x)
         if avail_action is not None:
             x = x.masked_fill(~avail_action, float('-inf'))
-        if printit:
-                print(x)
         return x
     
-class Critic(nn.Module):
-    def __init__(self, input_dim,hidden_dim,num_layer,output_dim,num_agents) -> None:
+class Qnetwrok(nn.Module):
+    def __init__(self, input_dim,hidden_dim,num_layer) -> None:
         super().__init__()
-        self.num_agents = num_agents
-        self.input_dim = input_dim
-        self.output_dim = output_dim
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for i in range(num_layer):
@@ -110,29 +116,41 @@ class Critic(nn.Module):
                 nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
             )
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, 1)))
-    
-    def forward(self,state,actions,grad_processing=False,batch_action=None):
         
-        x = self.maddpg_inputs(state,actions,grad_processing,batch_action)
+
+    
+    def forward(self,x):
         for layer in self.layers:
             x = layer(x)
-        return x.squeeze()
-    def maddpg_inputs(self,state ,actions,grad_processing,batch_action):
-        maddpg_inputs = torch.zeros((state.size(0),self.num_agents,self.input_dim))
-        maddpg_inputs[:,:,:state.size(-1)] = state.unsqueeze(1)
-        oh= actions.unsqueeze(1)
-        oh = oh.expand(-1,self.num_agents,-1,-1)
-        oh = oh.reshape(state.size(0),self.num_agents,-1)
-        if grad_processing:
-            b_oh= batch_action.unsqueeze(1)
-            b_oh = b_oh.expand(-1,self.num_agents,-1,-1)
-            b_oh = b_oh.reshape(state.size(0),self.num_agents,-1)
-            mask = torch.eye(self.num_agents)
-            mask = mask.unsqueeze(-1).expand(-1,-1,actions.size(-1))
-            mask = mask.reshape(self.num_agents,-1)
-            oh = torch.where(mask.bool(),oh, b_oh)
-        maddpg_inputs[:,:,state.size(-1):] = oh
-        return maddpg_inputs
+        return x
+
+class MixingNetwork(nn.Module):
+    def __init__(self, n_agents,s_dim,hidden_dim):
+        super().__init__()
+        self.n_agents = n_agents
+        self.hidden_dim = hidden_dim
+        self.hypernet_weight_1 = nn.Linear(s_dim, n_agents*hidden_dim)
+        self.hypernet_bias_1 = nn.Linear(s_dim, hidden_dim)
+        self.hypernet_weight_2 = nn.Linear(s_dim, hidden_dim)
+        self.hypernet_bias_2 = nn.Sequential(nn.Linear(s_dim, hidden_dim),
+                                             nn.ReLU(),
+                                            nn.Linear(hidden_dim, 1))
+    def forward(self,Q,s):
+        Q = Q.reshape(-1,1,self.n_agents)
+        # W1 = torch.abs(self.hypernet_weight_1(s))
+        W1 = self.hypernet_weight_1(s)
+        W1 = W1.reshape(-1,self.n_agents ,self.hidden_dim)
+        b1 = self.hypernet_bias_1(s)
+        b1 = b1.reshape(-1,1,self.hidden_dim)
+        Q = nn.functional.elu(torch.bmm(Q, W1) + b1)
+
+        # W2 = torch.abs(self.hypernet_weight_2(s))
+        W2 = self.hypernet_weight_2(s)
+        W2 = W2.reshape(-1,self.hidden_dim,1)
+        b2 = self.hypernet_bias_2(s)
+        b2 = b2.reshape(-1,1,1)
+        Q_tot = torch.bmm(Q, W2) + b2
+        return Q_tot
 
 class ReplayBuffer:
     def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False):
@@ -210,9 +228,11 @@ def norm_d(grads, d):
 def soft_update(target_net, utility_net, polyak):
         for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
             target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
+def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
+    slope = (end_e - start_e) / duration
+    return max(slope * t + start_e, end_e)
 
 if __name__ == "__main__":
-    ## what if we periodically empty the replay buffer
     args = tyro.cli(Args)
     seed = args.seed
     random.seed(seed)
@@ -235,47 +255,28 @@ if __name__ == "__main__":
         input_dim=env.get_obs_size(),
         hidden_dim=args.actor_hidden_dim,
         num_layer=args.actor_num_layers,
-        output_dim=env.get_action_size()
-    )
-    target_actor = Actor(
-        input_dim=env.get_obs_size(),
-        hidden_dim=args.actor_hidden_dim,
-        num_layer=args.actor_num_layers,
-        output_dim=env.get_action_size()
-    )
+        output_dim=env.get_action_size())
+    target_actor =  copy.deepcopy(actor)
 
-    maddpg_input_dim = env.get_state_size() +  env.n_agents*env.get_action_size()
-    critic = Critic(
-        input_dim=maddpg_input_dim,
-        hidden_dim=args.critic_hidden_dim,
-        num_layer=args.critic_num_layers,
-        output_dim=env.get_action_size(),
-        num_agents =  env.n_agents
-    )
-    target_critic = Critic(
-        input_dim=maddpg_input_dim,
-        hidden_dim=args.critic_hidden_dim,
-        num_layer=args.critic_num_layers,
-        output_dim=env.get_action_size(),
-        num_agents =  env.n_agents
-    )
-    soft_update(
-            target_net=target_critic,
-            utility_net=critic,
-            polyak=1.0
-        )
-    soft_update(
-            target_net=target_actor,
-            utility_net=actor,
-            polyak=1.0
-        )
+    critic = Qnetwrok(input_dim=env.get_obs_size() + env.get_action_size(),
+                                          hidden_dim=args.critic_hidden_dim,
+                                          num_layer=args.critic_num_layers)
+    target_critic =  copy.deepcopy(critic)
+
+    mixer = MixingNetwork(n_agents=env.n_agents,
+                                    s_dim=env.get_state_size(),
+                                    hidden_dim=args.hyper_dim)
+    target_mixer = copy.deepcopy(mixer)
+
+     ## initialize the optimizer
     Optimizer = getattr(optim, args.optimizer) 
     actor_optimizer = Optimizer(actor.parameters(),lr = args.learning_rate_actor)
-    critic_optimizer = Optimizer(critic.parameters(),lr = args.learning_rate_critic)
-
+    critic_optimizer = Optimizer(list(critic.parameters()) + list(mixer.parameters()),
+                          lr = args.learning_rate_critic)
+    
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
-    writer = SummaryWriter(f"runs/MADDPG-{run_name}")
+    writer = SummaryWriter(f"runs/FACMAC-{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -295,6 +296,7 @@ if __name__ == "__main__":
     step = 0
     while step < args.total_timesteps:
         episode = {"obs": [],"actions":[],"reward":[],"states":[],"done":[],"avail_actions":[]}
+        epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction, step)
         obs, _ = env.reset()
         ep_reward, ep_length = 0,0
         done, truncated = False, False
@@ -303,8 +305,13 @@ if __name__ == "__main__":
             avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
             state = torch.from_numpy(env.get_state()).to(args.device).float()
             with torch.no_grad():
-                actions = actor.act(obs,avail_action =avail_action,hard=True) ## These are one hot-vectors
-                actions_to_take = torch.argmax(actions,dim=-1)
+                actions = actor.act(obs,eps=epsilon,avail_action =avail_action,hard=True) ## These are one hot-vectors
+                if epsilon > 0:
+                    actions_to_take = actions.clone()
+                    actions = F.one_hot(actions.long(), num_classes=env.get_action_size())
+                else:
+                    actions_to_take = torch.argmax(actions,dim=-1)
+                    
             
             next_obs, reward, done, truncated, infos = env.step(actions_to_take)
             
@@ -332,12 +339,12 @@ if __name__ == "__main__":
                 if len(ep_rewards) > 0: 
                     writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
                     writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+                    writer.add_scalar("rollout/epsilon",epsilon,step)
                     if args.env_type == 'smaclite':
                         writer.add_scalar("rollout/battle_won",np.mean(np.mean([info["battle_won"] for info in ep_stats])), step)
                     ep_rewards = []
                     ep_lengths = []
                     ep_stats   = []
-        # print("num_episode",num_episode)
         if num_episode > args.batch_size:
             # print("I'm in ",num_episode)
             if num_episode % args.train_freq == 0:
@@ -347,32 +354,31 @@ if __name__ == "__main__":
                 # print(batch_obs.shape)
                 for t in range(batch_obs.size(1)-1):
                     with torch.no_grad():
-
                         actions_from_target_actor = target_actor.act(batch_obs[:,t+1],avail_action =batch_avail_action[:,t+1],hard=True)
-                        qvals_from_taget_critic = target_critic(batch_states[:,t+1],actions_from_target_actor)
-                        qvals_from_taget_critic = torch.nan_to_num(qvals_from_taget_critic, nan=0.0)
-                    targets = batch_reward[:,t].unsqueeze(-1).expand(-1,env.n_agents) + args.gamma * (1-batch_done[:,t+1].unsqueeze(-1).expand(-1,env.n_agents))*qvals_from_taget_critic
-                    q_values =critic(batch_states[:,t],batch_action[:,t])
-                    critic_loss += F.mse_loss(targets[batch_mask[:,t]],q_values[batch_mask[:,t]]) * batch_mask[:,t].sum()
+                        qvals_from_taget_utility = target_critic(torch.cat((batch_obs[:,t+1],actions_from_target_actor),dim=-1)).squeeze()
+                        q_tot_from_target_mixer = target_mixer(Q = qvals_from_taget_utility,s= batch_states[:,t+1]).squeeze()
+                        q_tot_from_target_mixer = torch.nan_to_num(q_tot_from_target_mixer, nan=0.0) 
+                        targets = batch_reward[:,t] + args.gamma * (1-batch_done[:,t+1])*q_tot_from_target_mixer
+                    q_values =critic(torch.cat((batch_obs[:,t],batch_action[:,t]),dim=-1)).squeeze()
+                    q_tot = mixer(Q =q_values, s = batch_states[:,t] ).squeeze() 
+                    critic_loss += F.mse_loss(targets[batch_mask[:,t]],q_tot[batch_mask[:,t]]) * batch_mask[:,t].sum()
                 critic_loss /= batch_mask.sum()
                 critic_optimizer.zero_grad()
                 critic_loss.backward()
                 critic_gradients = norm_d([p.grad for p in critic.parameters() ],2)
                 if args.clip_gradients > 0:
                     torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=args.clip_gradients)
+                    torch.nn.utils.clip_grad_norm_(mixer.parameters(), max_norm=args.clip_gradients)
                 critic_optimizer.step()
-                
-                if num_episode % args.target_network_update_freq == 0:
-                    soft_update(
-                        target_net=target_critic,
-                        utility_net=critic,
-                        polyak=args.polyak)
-                ## train the actor
+                    
+                perm = torch.randperm(batch_obs.size(1)-1, device=batch_obs.device)
+
                 actor_loss = 0
-                for t in range(batch_obs.size(1)-1):
+                for t in perm:
                     actions =  actor.act(batch_obs[:,t],avail_action =batch_avail_action[:,t],hard=True)
-                    qvals = critic(batch_states[:,t],actions,grad_processing=True,batch_action=batch_action[:,t] )
-                    actor_loss -=  qvals[batch_mask[:,t]].sum()
+                    q_values = critic(torch.cat((batch_obs[:,t],actions),dim=-1)).squeeze()
+                    q_tot = mixer(Q =q_values, s = batch_states[:,t] ).squeeze()
+                    actor_loss -=   q_tot[batch_mask[:,t]].sum()
                 actor_loss /= batch_mask.sum()
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -380,49 +386,55 @@ if __name__ == "__main__":
                 if args.clip_gradients > 0:
                     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.clip_gradients)
                 actor_optimizer.step()
-                if num_episode % args.target_network_update_freq == 0:
-                    soft_update(
-                        target_net=target_actor,
-                        utility_net=actor,
-                        polyak=args.polyak)
+
+                
                     
                 writer.add_scalar("train/critic_loss", critic_loss.item(), step)
                 writer.add_scalar("train/actor_loss", actor_loss.item(), step)
                 writer.add_scalar("train/actor_gradients", actor_gradients , step)
                 writer.add_scalar("train/critic_gradients", critic_gradients, step)
-                
-        
-        
-        
+            if num_episode % args.target_network_update_freq == 0:
+                    soft_update(
+                        target_net=target_actor,
+                        utility_net=actor,
+                        polyak=args.polyak)
+                    soft_update(
+                        target_net=target_critic,
+                        utility_net=critic,
+                        polyak=args.polyak)
+                    soft_update(
+                        target_net=target_mixer,
+                        utility_net=mixer,
+                        polyak=args.polyak)
+            if num_episode % args.eval_steps == 0:
+                eval_obs,_ = eval_env.reset()
+                eval_ep = 0
+                eval_ep_reward = []
+                eval_ep_length = []
+                eval_ep_stats = []
+                current_reward = 0
+                current_ep_length = 0
+                while eval_ep < args.num_eval_ep:
+                    eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
+                    mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                    with torch.no_grad():
+                        logits = actor.logits(eval_obs, avail_action = mask_eval)
+                        eval_actions  = torch.argmax(logits,dim=-1)
+                    next_obs_, reward, done, truncated, infos = eval_env.step(eval_actions)
+                    current_reward += reward
+                    current_ep_length += 1
+                    eval_obs = next_obs_
+                    if done or truncated:
+                        eval_obs, _ = eval_env.reset()
+                        eval_ep_reward.append(current_reward)
+                        eval_ep_length.append(current_ep_length)
+                        eval_ep_stats.append(infos)
+                        current_reward = 0
+                        current_ep_length = 0
+                        eval_ep +=1
+                writer.add_scalar("eval/ep_reward",np.mean(eval_ep_reward), step)
+                writer.add_scalar("eval/std_ep_reward",np.std(eval_ep_reward), step)
+                writer.add_scalar("eval/ep_length",np.mean(eval_ep_length), step)
+                if args.env_type == 'smaclite':
+                    writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)
 
-        if num_episode % args.eval_steps == 0:
-            eval_obs,_ = eval_env.reset()
-            eval_ep = 0
-            eval_ep_reward = []
-            eval_ep_length = []
-            eval_ep_stats = []
-            current_reward = 0
-            current_ep_length = 0
-            while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
-                with torch.no_grad():
-                    logits = actor.logits(eval_obs, avail_action = mask_eval)
-                    eval_actions  = torch.argmax(logits,dim=-1)
-                next_obs_, reward, done, truncated, infos = eval_env.step(eval_actions)
-                current_reward += reward
-                current_ep_length += 1
-                eval_obs = next_obs_
-                if done or truncated:
-                    eval_obs, _ = eval_env.reset()
-                    eval_ep_reward.append(current_reward)
-                    eval_ep_length.append(current_ep_length)
-                    eval_ep_stats.append(infos)
-                    current_reward = 0
-                    current_ep_length = 0
-                    eval_ep +=1
-            writer.add_scalar("eval/ep_reward",np.mean(eval_ep_reward), step)
-            writer.add_scalar("eval/std_ep_reward",np.std(eval_ep_reward), step)
-            writer.add_scalar("eval/ep_length",np.mean(eval_ep_length), step)
-            if args.env_type == 'smaclite':
-                writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)

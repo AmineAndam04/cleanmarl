@@ -6,3 +6,10 @@
     - Increase batch and mini-batch diversity
     - Weight decay
     - LBF and MADDPG may need n-step return updates
+
+## Mistakes:
+    - In QMIX: (1-batch_done[:,t])*q_tot_target should be t+1
+    - the .device are wrong in all places
+    - revise the epsilon in coma, did I compute it in the right place ??
+    - correct these "ep_stats.extend([info["battle_won"] for info in ep_stat]) " look at mappo multienv for the correct 
+    - Check that I reset h_eval in lstm evaluation loop
