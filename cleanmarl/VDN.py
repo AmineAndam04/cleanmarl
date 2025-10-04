@@ -1,3 +1,4 @@
+import copy
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,18 +8,18 @@ import tyro
 import random 
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
+from env.lbf import LBFWrapper
 import torch.nn.functional as F
 import datetime
 from torch.utils.tensorboard import SummaryWriter
 
-# TODO:  1- Check device.  2- Do we use polyak. 3- Fix the seed. 4- Initialize the network 5- Try MPE environments
 
 
 @dataclass
 class Args:
     env_type: str = "smaclite" #"pz"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "2s_vs_1sc" #"simple_spread_v3" #"pursuit_v4"
+    env_name: str = "3m" #"simple_spread_v3" #"pursuit_v4"
     """ Name of the environment """
     env_family: str ="sisl"
     """ Env family when using pz"""
@@ -26,7 +27,7 @@ class Args:
     """ Include id (one-hot vector) at the agent of the observations"""
     buffer_size: int = 10000
     """ The size of the replay buffer"""
-    total_timesteps: int = 2000000
+    total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
     gamma: float = 0.99
     """ Discount factor"""
@@ -36,9 +37,9 @@ class Args:
     """ Train the network each «train_freq» step in the environment"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate: float =  0.0003
+    learning_rate: float =  0.0005
     """ Learning rate"""
-    batch_size: int = 128
+    batch_size: int = 32
     """ Batch size"""
     start_e: float = 1
     """ The starting value of epsilon, for exploration"""
@@ -46,26 +47,29 @@ class Args:
     """ The end value of epsilon, for exploration"""
     exploration_fraction: float = 0.05
     """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
-    hidden_dim: int = 128
+    hidden_dim: int = 64
     """ Hidden dimension"""
-    num_layers: int = 2
+    num_layers: int = 1
     """ Number of layers"""
-    target_network_update_freq: int = 10000
+    target_network_update_freq: int = 5
     """ Update the target network each target_network_update_freq» step in the environment"""
-    log_every: int = 1000
-    """ Logging steps """
-    grad_clip: float =  5
-    """ Gradient clipping value"""
-    polyak: float = 1
+    polyak: float = 0.005
     """ Polyak coefficient when using polyak averaging for target network update"""
-    eval_steps: int = 10000
+    normalize_reward: bool = False
+    """ Normalize the rewards if True"""
+    clip_gradients: int = 5
+    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    log_every: int = 10
+    """ Log rollout stats every <log_every> episode """
+    eval_steps: int = 5000
     """ Evaluate the policy each «eval_steps» steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
-    device: str ="cpu"
+    device: str ="mps"
     """ Device (cpu, gpu, mps)"""
-    normalize_reward: bool = True
-    """ Normalize the rewards if True"""
+    seed: int  = 1
+    """ Random seed"""
+    
 
     
 
@@ -82,11 +86,11 @@ class Qnetwrok(nn.Module):
         
 
     
-    def forward(self,x,mask=None):
+    def forward(self,x,avail_action=None):
         for layer in self.layers:
             x = layer(x)
-        if mask is not None:
-            x = x.masked_fill(~mask, float('-inf'))
+        if avail_action is not None:
+            x = x.masked_fill(~avail_action, float('-inf'))
         return x
 class ReplayBuffer:
     def __init__(self,buffer_size,num_agents,obs_space,action_space,normalize_reward = False):
@@ -97,19 +101,19 @@ class ReplayBuffer:
         self.normalize_reward = normalize_reward
 
         self.obs = np.zeros((self.buffer_size,self.num_agents,self.obs_space))
-        self.mask = np.zeros((self.buffer_size,self.num_agents,self.action_space))
         self.action = np.zeros((self.buffer_size,self.num_agents))
-        self.reward = np.zeros((self.buffer_size,1))
+        self.reward = np.zeros((self.buffer_size))
         self.next_obs = np.zeros((self.buffer_size,self.num_agents,self.obs_space))
-        self.done = np.zeros((self.buffer_size,1))
+        self.next_avail_action = np.zeros((self.buffer_size,self.num_agents,self.action_space))
+        self.done = np.zeros((self.buffer_size))
         self.pos = 0
         self.size = 0
-    def store(self,obs,action,reward,done,next_obs,mask):
+    def store(self,obs,action,reward,done,next_obs,next_avail_action):
         self.obs[self.pos] = obs
         self.action[self.pos] = action
         self.reward[self.pos] = reward
         self.next_obs[self.pos] = next_obs
-        self.mask[self.pos]  = mask
+        self.next_avail_action[self.pos]  = next_avail_action
         self.done[self.pos] = done
         self.pos = (self.pos + 1) % self.buffer_size
         self.size = min(self.size + 1, self.buffer_size)
@@ -126,7 +130,7 @@ class ReplayBuffer:
             torch.from_numpy(self.action[indices]).long(),
             torch.from_numpy(rewards).float(),
             torch.from_numpy(self.next_obs[indices]).float(),
-            torch.from_numpy(self.mask[indices]).bool(),
+            torch.from_numpy(self.next_avail_action[indices]).bool(),
             torch.from_numpy(self.done[indices]).float()
         )
 
@@ -139,6 +143,8 @@ def environment(env_type, env_name, env_family,agent_ids,kwargs):
         env = PettingZooWrapper(family = env_family, env_name = env_name,agent_ids=agent_ids,**kwargs)
     elif env_type == 'smaclite':
         env = SMACliteWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
+    elif env_type == 'lbf':
+        env = LBFWrapper(map_name=env_name,agent_ids=agent_ids,**kwargs)
     
     return env
 def norm_d(grads, d):
@@ -150,9 +156,14 @@ def soft_update(target_net, utility_net, polyak):
             target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
 
 if __name__ == "__main__":
-    ## what if we periodically empty the replay buffer
     args = tyro.cli(Args)
-    ## import the environment 
+    # Set the randomness seed
+    seed = args.seed
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    # Import the environment 
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
     env = environment(env_type= args.env_type,
                       env_name=args.env_name,
@@ -164,25 +175,19 @@ if __name__ == "__main__":
                       env_family=args.env_family,
                       agent_ids=args.agent_ids,
                       kwargs=kwargs)
-    ## initialize the utility and target networks
-    agents_utility_network = Qnetwrok(input_dim=env.get_obs_size(),
+    
+    # Initialize the utility and target networks
+    utility_network = Qnetwrok(input_dim=env.get_obs_size(),
                                           hidden_dim=args.hidden_dim,
                                           num_layer=args.num_layers,
                                           output_dim=env.get_action_size())
-    agents_target_network = Qnetwrok(input_dim=env.get_obs_size(),
-                                          hidden_dim=args.hidden_dim,
-                                          num_layer=args.num_layers,
-                                          output_dim=env.get_action_size())
-    soft_update(
-            target_net=agents_target_network,
-            utility_net=agents_utility_network,
-            polyak=1.0
-        )
-    ## initialize the optimizer
-    optimizer = getattr(optim, args.optimizer) 
-    optimizer = optimizer(agents_utility_network.parameters(),lr = args.learning_rate)
+    target_network = copy.deepcopy(utility_network)
 
-    ## initialize a shared replay buffer
+    # Initialize the optimizer
+    optimizer = getattr(optim, args.optimizer) 
+    optimizer = optimizer(utility_network.parameters(),lr = args.learning_rate)
+
+    # Initialize a shared replay buffer
     rb = ReplayBuffer(
         buffer_size=args.buffer_size,
         obs_space= env.get_obs_size(),
@@ -190,86 +195,95 @@ if __name__ == "__main__":
         num_agents= env.n_agents,
         normalize_reward= args.normalize_reward
     )
-    obs,_ = env.reset()
-    mask = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
-    ep_reward = 0
-    ep_length = 0
-    ep_rewards = []
-    ep_lengths = []
-    ep_stats = []
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs/VDN-{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
+    
+    obs,_ = env.reset()
+    avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
+    ep_rewards = []
+    ep_lengths = []
+    ep_stats = []
+    ep_reward = 0
+    ep_length = 0
+    num_episodes = 0
     for step in range(args.total_timesteps):
         ## select actions
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step)
         if random.random() < epsilon:
             actions = env.sample()
         else:
-            obs = torch.from_numpy(obs).to(args.device).float()
             with torch.no_grad():
-                q_values = agents_utility_network(obs,mask =mask)
+                q_values = utility_network(x=torch.from_numpy(obs).float(),avail_action =avail_action)
+                
             actions  = torch.argmax(q_values,dim=-1)
+
         next_obs, reward, done, truncated, infos = env.step(actions)
-        mask = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device) # Get the mask of 'next_obs' and store it in the replay, we need it for the bellman loss
+        next_avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool) # We need the next_avail_action to compute the target loss : max of Q(next_state)
         
         ep_reward += reward
         ep_length += 1
         
-        rb.store(obs, actions,reward,done,next_obs,mask)
+        rb.store(obs, actions,reward,done,next_obs,next_avail_action)
         obs = next_obs 
+        avail_action = next_avail_action 
         if done or truncated:
             obs, _ = env.reset()
-            mask = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
+            avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
             ep_rewards.append(ep_reward)
             ep_lengths.append(ep_length)
             if args.env_type == 'smaclite':
                 ep_stats.append(infos) ## Add battle won for smaclite
             ep_reward = 0
             ep_length = 0
+            num_episodes+=1
                
         if step > args.learning_starts:
             if step % args.train_freq == 0:
-                batch_obs,batch_action,batch_reward,batch_next_obs,batch_mask,batch_done = rb.sample(args.batch_size)
+                batch_obs,batch_action,batch_reward,batch_next_obs,batch_next_avail_action,batch_done = rb.sample(args.batch_size)
                 with torch.no_grad():
-                    q_next_max,_ = agents_target_network(batch_next_obs,mask =batch_mask ).max(dim=-1)
+                    q_next_max,_ = target_network(batch_next_obs,avail_action =batch_next_avail_action ).max(dim=-1)
                 vdn_q_max = q_next_max.sum(dim=-1)
-                targets = batch_reward.squeeze() + args.gamma * (1-batch_done.squeeze())*vdn_q_max #(torch.sum(q_next_max, dim=-1))
-                q_values = torch.gather(agents_utility_network(batch_obs),dim=-1, index=batch_action.unsqueeze(-1)).squeeze()
+                targets = batch_reward + args.gamma * (1-batch_done)*vdn_q_max 
+
+                q_values = torch.gather(utility_network(batch_obs),dim=-1, index=batch_action.unsqueeze(-1)).squeeze()
                 vdn_q_values = q_values.sum(dim = -1)
                 loss = F.mse_loss(targets,vdn_q_values)
                 optimizer.zero_grad()
                 loss.backward()
-                grads = [p.grad for p in agents_utility_network.parameters() ]
-                grad_norm_2 = norm_d(grads,2)
-                torch.nn.utils.clip_grad_norm_(agents_utility_network.parameters(), max_norm=args.grad_clip, norm_type=2)
+                grads = [p.grad for p in utility_network.parameters() ]
+                vdn_gradients = norm_d(grads,2)
+                if args.clip_gradients > 0:
+                    torch.nn.utils.clip_grad_norm_(utility_network.parameters(), max_norm=args.clip_gradients)
                 optimizer.step()
-                if step % args.target_network_update_freq == 0:
-                    soft_update(
-                        target_net=agents_target_network,
-                        utility_net=agents_utility_network,
-                        polyak=args.polyak
-                    )
-                writer.add_scalar("train/loss", loss.item(), step)
-                writer.add_scalar("train/grads", grad_norm_2, step)
                 
-        
-        if step % args.log_every == 0:
+                writer.add_scalar("train/loss", loss.item(), step)
+                writer.add_scalar("train/grads", vdn_gradients, step)
+                
+            if step % args.target_network_update_freq == 0:
+                        soft_update(
+                            target_net=target_network,
+                            utility_net=utility_network,
+                            polyak=args.polyak
+                        )
+ 
+        if len(ep_rewards) > args.log_every :
                 if len(ep_rewards) > 0: 
                     writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
                     writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+                    writer.add_scalar("rollout/epsilon",epsilon,step)
                     if args.env_type == 'smaclite':
-                        writer.add_scalar("rollout/battle_won",np.mean(np.mean([info["battle_won"] for info in ep_stats])), step)
+                        writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
                     ep_rewards = []
                     ep_lengths = []
                     ep_stats   = []
         
 
-        if step % args.eval_steps == 0 and step > args.learning_starts:
+        if  step > 0 and  step % args.eval_steps == 0 :
             eval_obs,_ = eval_env.reset()
             eval_ep = 0
             eval_ep_reward = []
@@ -278,11 +292,11 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
-                q_values = agents_utility_network(eval_obs, mask = mask_eval)
+                eval_obs = torch.from_numpy(eval_obs).float()
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
+                q_values = utility_network(eval_obs, avail_action = mask_eval)
                 actions  = torch.argmax(q_values,dim=-1)
-                next_obs_, reward, done, truncated, infos = eval_env.step(actions)
+                next_obs_, reward, done, truncated, infos = eval_env.step(actions.cpu())
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_

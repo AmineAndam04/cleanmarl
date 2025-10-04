@@ -13,3 +13,9 @@
     - revise the epsilon in coma, did I compute it in the right place ??
     - correct these "ep_stats.extend([info["battle_won"] for info in ep_stat]) " look at mappo multienv for the correct 
     - Check that I reset h_eval in lstm evaluation loop
+
+
+- To check in every code:
+    - Are devices used properly
+    - Seeding
+    - clip the gradients

@@ -15,9 +15,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Args:
-    env_type: str = "smaclite"
+    env_type: str = "lbf"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "3m"
+    env_name: str = "Foraging-2s-10x10-4p-2f"
     """ Name of the environment"""
     env_family: str ="mpe"
     """ Env family when using pz"""
@@ -35,15 +35,15 @@ class Args:
     """ Number of hidden layers of critic network"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate_actor: float =  0.00025
+    learning_rate_actor: float =  0.0008
     """ Learning rate for the actor"""
-    learning_rate_critic: float =  0.00025
+    learning_rate_critic: float =  0.0008
     """ Learning rate for the critic"""
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
     gamma: float = 0.99
     """ Discount factor"""
-    td_lambda: float = 0.8
+    td_lambda: float = 0.95
     """ TD(λ) discount factor"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
@@ -53,7 +53,7 @@ class Args:
     """ Normalize the returns if True"""
     epochs: int = 3
     """ Number of training epochs"""
-    ppo_clip: float = 0.1
+    ppo_clip: float = 0.2
     """ PPO clipping factor """
     entropy_coef: float = 0.001
     """ Entropy coefficient """
@@ -102,7 +102,7 @@ class  RolloutBuffer():
             avail_actions[i,:length] = np.stack(self.episodes[i]["avail_actions"])
             actions[i,:length] = np.stack(self.episodes[i]["actions"])
             log_probs[i,:length] = np.stack(self.episodes[i]["log_prob"])
-            reward[i,:length] = np.stack(torch.as_tensor(self.episodes[i]["reward"]))
+            reward[i,:length] = np.stack(self.episodes[i]["reward"])
             states[i,:length] = np.stack(self.episodes[i]["states"])
             done[i,:length] = np.stack(self.episodes[i]["done"])
             mask[i,:length] = 1
@@ -259,7 +259,6 @@ if __name__ == "__main__":
                 ep_reward += reward
                 ep_length += 1
                 step +=1
-
                 episode["obs"].append(obs)
                 episode["actions"].append(actions)
                 episode["log_prob"].append(log_probs)
