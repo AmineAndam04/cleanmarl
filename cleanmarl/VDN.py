@@ -65,7 +65,7 @@ class Args:
     """ Evaluate the policy each «eval_steps» steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
-    device: str ="mps"
+    device: str ="cpu"
     """ Device (cpu, gpu, mps)"""
     seed: int  = 1
     """ Random seed"""
@@ -271,15 +271,14 @@ if __name__ == "__main__":
                         )
  
         if len(ep_rewards) > args.log_every :
-                if len(ep_rewards) > 0: 
-                    writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
-                    writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
-                    writer.add_scalar("rollout/epsilon",epsilon,step)
-                    if args.env_type == 'smaclite':
-                        writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
-                    ep_rewards = []
-                    ep_lengths = []
-                    ep_stats   = []
+            writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
+            writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+            writer.add_scalar("rollout/epsilon",epsilon,step)
+            if args.env_type == 'smaclite':
+                writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
+            ep_rewards = []
+            ep_lengths = []
+            ep_stats   = []
         
 
         if  step > 0 and  step % args.eval_steps == 0 :

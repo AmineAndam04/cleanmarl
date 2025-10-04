@@ -39,7 +39,7 @@ class Args:
     """ Train the network each «train_freq» step in the environment. The used value is train_freq*num_envs"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate: float =  0.0005
+    learning_rate: float =  0.0007
     """ Learning rate"""
     batch_size: int = 32
     """Batch size"""
@@ -47,7 +47,7 @@ class Args:
     """ The starting value of epsilon, for exploration"""
     end_e: float = 0.05
     """ The end value of epsilon, for exploration"""
-    exploration_fraction: float = 0.05
+    exploration_fraction: float = 0.01
     """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
     hidden_dim: int = 64
     """ Hidden dimension"""
@@ -61,7 +61,7 @@ class Args:
     """ Update the target network each target_network_update_freq» step in the environment"""
     log_every: int = 10
     """ Logging steps"""
-    clip_gradients: int = -1
+    clip_gradients: int = 1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     eval_steps: int = 10000
     """ Evaluate the policy each eval_steps steps. The used value is eval_steps*num_envs"""
@@ -315,15 +315,14 @@ if __name__ == "__main__":
                     )
         
         if len(ep_rewards) > args.log_every :
-                if len(ep_rewards) > 0: 
-                    writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
-                    writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
-                    writer.add_scalar("rollout/epsilon",epsilon,step)
-                    if args.env_type == 'smaclite':
-                        writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
-                    ep_rewards = []
-                    ep_lengths = []
-                    ep_stats   = []
+            writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
+            writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+            writer.add_scalar("rollout/epsilon",epsilon,step)
+            if args.env_type == 'smaclite':
+                writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
+            ep_rewards = []
+            ep_lengths = []
+            ep_stats   = []
         if step % args.eval_steps == 0 and step > args.learning_starts:
             eval_obs,_ = eval_env.reset()
             eval_ep = 0

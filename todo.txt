@@ -14,8 +14,14 @@
     - correct these "ep_stats.extend([info["battle_won"] for info in ep_stat]) " look at mappo multienv for the correct 
     - Check that I reset h_eval in lstm evaluation loop
 
+    - I should use done(t) not done(t+1)
+
 
 - To check in every code:
     - Are devices used properly
     - Seeding
     - clip the gradients
+
+- Things to do later:
+    - separate the tbppt from normal training for lstm
+    -  use n-step returns in vdn and qmix

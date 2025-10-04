@@ -216,6 +216,11 @@ def env_worker(conn,env_serialized):
 if __name__ == "__main__":
     
     args = tyro.cli(Args)
+    #Set the seeds
+    seed = args.seed
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
     ## Create the pipes to communicate between the main process (VDN algorithm) and child processes (envs)
     conns = [Pipe() for _ in range(args.num_envs)]
@@ -262,8 +267,8 @@ if __name__ == "__main__":
 
     
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{args.env_type}__{args.env_name}__parallel__{time_token}"
-    writer = SummaryWriter(f"runs/VDN-multienv-{run_name}")
+    run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    writer = SummaryWriter(f"runs/VDN-multienvs-{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -335,15 +340,14 @@ if __name__ == "__main__":
        
 
         if len(ep_rewards) > args.log_every :
-                if len(ep_rewards) > 0: 
-                    writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
-                    writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
-                    writer.add_scalar("rollout/epsilon",epsilon,step)
-                    if args.env_type == 'smaclite':
-                        writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
-                    ep_rewards = []
-                    ep_lengths = []
-                    ep_stats   = []
+            writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
+            writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+            writer.add_scalar("rollout/epsilon",epsilon,step)
+            if args.env_type == 'smaclite':
+                writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
+            ep_rewards = []
+            ep_lengths = []
+            ep_stats   = []
                
         if step > args.learning_starts:
             if step % (args.train_freq* args.num_envs) ==0 : 
