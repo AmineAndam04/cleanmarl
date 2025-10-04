@@ -17,9 +17,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Args:
-    env_type: str = "smaclite" #"pz"
+    env_type: str = "lbf" #"pz"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "3m" #"simple_spread_v3" #"pursuit_v4"
+    env_name: str = "Foraging-2s-10x10-4p-2f" #"simple_spread_v3" #"pursuit_v4"
     """ Name of the environment """
     env_family: str ="sisl"
     """ Env family when using pz"""
@@ -219,7 +219,6 @@ if __name__ == "__main__":
         else:
             with torch.no_grad():
                 q_values = utility_network(x=torch.from_numpy(obs).float(),avail_action =avail_action)
-                
             actions  = torch.argmax(q_values,dim=-1)
 
         next_obs, reward, done, truncated, infos = env.step(actions)
