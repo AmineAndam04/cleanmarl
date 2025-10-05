@@ -293,9 +293,9 @@ if __name__ == "__main__":
             ep_reward, ep_length = 0,0
             done, truncated = False, False
             while not done and not truncated:
-                obs = torch.from_numpy(obs).to(args.device).float()
-                avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
-                state = torch.from_numpy(env.get_state()).to(args.device).float()
+                obs = torch.from_numpy(obs).float()
+                avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
+                state = torch.from_numpy(env.get_state()).float()
                 with torch.no_grad():
                     actions = actor.act(obs,eps=epsilon,avail_action=avail_action)
                 
@@ -451,8 +451,8 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                eval_obs = torch.from_numpy(eval_obs).float()
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
                 with torch.no_grad():
                     actions = actor.act(eval_obs,avail_action=mask_eval)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)

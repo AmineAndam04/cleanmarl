@@ -349,8 +349,8 @@ if __name__ == "__main__":
                 contents = [qmix_conns[i].recv() for i in alive_envs]
                 actions = np.array([content["actions"] for content in contents])
             else:
-                obs = torch.from_numpy(obs).to(args.device).float()
-                avail_action = torch.tensor(avail_action, dtype=torch.bool, device=args.device)
+                obs = torch.from_numpy(obs).float()
+                avail_action = torch.tensor(avail_action, dtype=torch.bool)
                 num_alive_envs =len(alive_envs)
                 with torch.no_grad():
                     q_values = utility_network(obs,avail_action =avail_action)
@@ -475,8 +475,8 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                eval_obs = torch.from_numpy(eval_obs).float()
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
                 q_values = utility_network(eval_obs, avail_action = mask_eval)
                 actions  = torch.argmax(q_values,dim=-1)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)

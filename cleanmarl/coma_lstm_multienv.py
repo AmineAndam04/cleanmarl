@@ -141,7 +141,7 @@ class Actor(nn.Module):
     def act(self,x,h=None,eps=0,avail_action=None):
         x = self.fc1(x)
         if h is None:
-            h = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+            h = torch.zeros(x.size(0), self.hidden_dim)
         h = self.gru(x,h)
         x = self.fc2(h)
         if avail_action is not None:
@@ -155,7 +155,7 @@ class Actor(nn.Module):
     def logits(self,x,h=None,eps=0,avail_action=None):
         x = self.fc1(x)
         if h is None:
-            h = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+            h = torch.zeros(x.size(0), self.hidden_dim)
         h = self.gru(x,h)
         x = self.fc2(h)
         if avail_action is not None:
@@ -379,9 +379,9 @@ if __name__ == "__main__":
         ep_reward, ep_length,ep_stat = [0]* args.batch_size,[0]* args.batch_size,[0]* args.batch_size
         h = None
         while len(alive_envs) > 0:
-            obs = torch.from_numpy(obs).to(args.device).float()
-            avail_action = torch.tensor(avail_action, dtype=torch.bool, device=args.device)
-            state = torch.from_numpy(state).to(args.device).float()
+            obs = torch.from_numpy(obs).float()
+            avail_action = torch.tensor(avail_action, dtype=torch.bool)
+            state = torch.from_numpy(state).float()
             with torch.no_grad():
                 obs = obs.reshape(len(alive_envs)*eval_env.n_agents,-1)
                 avail_action = avail_action.reshape(len(alive_envs)*eval_env.n_agents,-1)
@@ -602,8 +602,8 @@ if __name__ == "__main__":
             current_ep_length = 0
             h_eval = None 
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                eval_obs = torch.from_numpy(eval_obs).float()
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
 
                 with torch.no_grad():
                     actions,h_eval = actor.act(eval_obs,h_eval,avail_action=mask_eval)

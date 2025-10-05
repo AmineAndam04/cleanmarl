@@ -139,7 +139,7 @@ class Actor(nn.Module):
     def act(self,x,h=None,eps=0,avail_action=None):
         x = self.fc1(x)
         if h is None:
-            h = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+            h = torch.zeros(x.size(0), self.hidden_dim)
         h = self.gru(x,h)
         x = self.fc2(h)
         if avail_action is not None:
@@ -153,7 +153,7 @@ class Actor(nn.Module):
     def logits(self,x,h=None,eps=0,avail_action=None):
         x = self.fc1(x)
         if h is None:
-            h = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+            h = torch.zeros(x.size(0), self.hidden_dim)
         h = self.gru(x,h)
         x = self.fc2(h)
         if avail_action is not None:
@@ -298,9 +298,9 @@ if __name__ == "__main__":
             done, truncated = False, False
             h = None
             while not done and not truncated:
-                obs = torch.from_numpy(obs).to(args.device).float()
-                avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
-                state = torch.from_numpy(env.get_state()).to(args.device).float()
+                obs = torch.from_numpy(obs).float()
+                avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
+                state = torch.from_numpy(env.get_state()).float()
                 with torch.no_grad():
                     actions,h = actor.act(obs,h=h,eps=epsilon,avail_action=avail_action)
                 next_obs, reward, done, truncated, infos = env.step(actions)
@@ -482,8 +482,8 @@ if __name__ == "__main__":
             current_ep_length = 0
             h_eval = None 
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                eval_obs = torch.from_numpy(eval_obs).float()
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
                 with torch.no_grad():
                     actions,h_eval = actor.act(eval_obs,h_eval,avail_action=mask_eval)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)

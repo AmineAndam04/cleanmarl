@@ -1,4 +1,5 @@
 from multiprocessing import Pipe, Process
+import copy
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -38,11 +39,11 @@ class Args:
     """ Hidden dimension of actor network"""
     actor_num_layers: int = 1
     """ Number of hidden layers of actor network"""
-    critic_hidden_dim: int = 256
+    critic_hidden_dim: int = 128
     """ Hidden dimension of critic network"""
     critic_num_layers: int = 1
     """ Number of hidden layers of critic network"""
-    epochs: int = 2
+    epochs: int = 4
     """ In this case, by train_freq we main number of training epochs after collecting num_envs episodes, one epoch = sample from the replay buffer"""
     optimizer: str = "Adam"
     """ The optimizer"""
@@ -54,7 +55,7 @@ class Args:
     """ Total steps in the environment during training"""
     target_network_update_freq: int = 1
     """ Update the target network each target_network_update_freq» step in the environment"""
-    polyak: float = 0.005
+    polyak: float = 0.01
     """ Polyak coefficient when using polyak averaging for target network update"""
     log_every: int = 10
     """ Logging steps """
@@ -64,9 +65,9 @@ class Args:
     """ Number of evaluation episodes"""
     device: str ="cpu"
     """ Device (cpu, gpu, mps)"""
-    seed: int  = 42
+    seed: int  = 1
     """ Random seed"""
-    clip_gradients: int = 0.5
+    clip_gradients: int = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
 
 
@@ -82,22 +83,16 @@ class Actor(nn.Module):
                 nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
             )
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
-        
-
     
-    def act(self,x,avail_action=None,hard=False,printit= False):
-        x = self.logits(x,avail_action,printit)
+    def act(self,x,avail_action=None,hard=False):
+        x = self.logits(x,avail_action)
         actions = F.gumbel_softmax(logits=x,hard=hard)
         return actions
-    def logits(self,x,avail_action=None,printit=False):
+    def logits(self,x,avail_action=None):
         for layer in self.layers:
             x = layer(x)
-            if printit:
-                print(x)
         if avail_action is not None:
             x = x.masked_fill(~avail_action, float('-inf'))
-        if printit:
-                print(x)
         return x
     
 class Critic(nn.Module):
@@ -272,13 +267,12 @@ def norm_d(grads, d):
     return total_norm_d
 
 def soft_update(target_net, utility_net, polyak):
-        print("update")
-        for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
-            target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
+    for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
+        target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
 
 if __name__ == "__main__":
-    ## what if we periodically empty the replay buffer
     args = tyro.cli(Args)
+    # Set random seed
     seed = args.seed
     random.seed(seed)
     np.random.seed(seed)
@@ -312,12 +306,7 @@ if __name__ == "__main__":
         num_layer=args.actor_num_layers,
         output_dim=eval_env.get_action_size()
     )
-    target_actor = Actor(
-        input_dim=eval_env.get_obs_size(),
-        hidden_dim=args.actor_hidden_dim,
-        num_layer=args.actor_num_layers,
-        output_dim=eval_env.get_action_size()
-    )
+    target_actor = copy.deepcopy(actor)
 
     maddpg_input_dim = eval_env.get_state_size() +  eval_env.n_agents*eval_env.get_action_size()
     critic = Critic(
@@ -327,23 +316,8 @@ if __name__ == "__main__":
         output_dim=eval_env.get_action_size(),
         num_agents =  eval_env.n_agents
     )
-    target_critic = Critic(
-        input_dim=maddpg_input_dim,
-        hidden_dim=args.critic_hidden_dim,
-        num_layer=args.critic_num_layers,
-        output_dim=eval_env.get_action_size(),
-        num_agents =  eval_env.n_agents
-    )
-    soft_update(
-            target_net=target_critic,
-            utility_net=critic,
-            polyak=1.0
-        )
-    soft_update(
-            target_net=target_actor,
-            utility_net=actor,
-            polyak=1.0
-        )
+    target_critic = copy.deepcopy(critic)
+
     Optimizer = getattr(optim, args.optimizer) 
     actor_optimizer = Optimizer(actor.parameters(),lr = args.learning_rate_actor)
     critic_optimizer = Optimizer(critic.parameters(),lr = args.learning_rate_critic)
@@ -363,7 +337,11 @@ if __name__ == "__main__":
         num_agents= eval_env.n_agents,
         normalize_reward= args.normalize_reward
     )
+    ep_rewards = []
+    ep_lengths = []
+    ep_stats = []
     num_episode = 0
+    num_updates = 0
     step = 0
     while step < args.total_timesteps:
         episodes = [{"obs": [],"actions":[],"reward":[],"states":[],"done":[],"avail_actions":[]}
@@ -379,9 +357,9 @@ if __name__ == "__main__":
         alive_envs = list(range(args.num_envs))      
         ep_reward, ep_length,ep_stat = [0]* args.num_envs,[0]* args.num_envs,[0]* args.num_envs
         while len(alive_envs) > 0:
-            obs = torch.from_numpy(obs).to(args.device).float()
-            avail_action = torch.tensor(avail_action, dtype=torch.bool, device=args.device)
-            state = torch.from_numpy(state).to(args.device).float()
+            obs = torch.from_numpy(obs).float()
+            avail_action = torch.tensor(avail_action, dtype=torch.bool)
+            state = torch.from_numpy(state).float()
             with torch.no_grad():
                 actions = actor.act(obs,avail_action =avail_action,hard=True) ## These are one hot-vectors
                 actions_to_take = torch.argmax(actions,dim=-1)
@@ -428,16 +406,20 @@ if __name__ == "__main__":
                 state = np.stack(state,axis=0)
         
         num_episode+= args.num_envs
+        ep_rewards.extend(ep_reward)
+        ep_lengths.extend(ep_length)
+        ep_stats.extend(ep_stat)
         ## logging
-        writer.add_scalar("rollout/ep_reward", np.mean(ep_reward), step)
-        writer.add_scalar("rollout/ep_length",np.mean(ep_length),step)
-        writer.add_scalar("rollout/num_episode", num_episode, step)
-        if args.env_type == 'smaclite':
-            writer.add_scalar("rollout/battle_won",np.mean(np.mean([info["battle_won"] for info in ep_stat])), step)
-
-        # print("num_episode",num_episode)
+        if (num_updates//args.epochs) %  args.log_every == 0:
+            writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
+            writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+            writer.add_scalar("rollout/num_episodes",num_episode,step)
+            if args.env_type == 'smaclite':
+                writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
+            ep_rewards = []
+            ep_lengths = []
+            ep_stats   = []
         if num_episode > args.batch_size:
-            # print("I'm in ",num_episode)
             critic_losses = []
             critic_gradients = []
             actor_losses = []
@@ -446,16 +428,17 @@ if __name__ == "__main__":
                 batch_obs,batch_action,batch_reward,batch_states,batch_avail_action,batch_done, batch_mask = rb.sample(args.batch_size)
                 ## train the critic
                 critic_loss = 0
-                # print(batch_obs.shape)
-                for t in range(batch_obs.size(1)-1):
+                for t in range(batch_obs.size(1)):
                     with torch.no_grad():
-
-                        actions_from_target_actor = target_actor.act(batch_obs[:,t+1],avail_action =batch_avail_action[:,t+1],hard=True)
-                        qvals_from_taget_critic = target_critic(batch_states[:,t+1],actions_from_target_actor)
-                        qvals_from_taget_critic = torch.nan_to_num(qvals_from_taget_critic, nan=0.0)
-                    targets = batch_reward[:,t].unsqueeze(-1).expand(-1,eval_env.n_agents) + args.gamma * (1-batch_done[:,t+1].unsqueeze(-1).expand(-1,eval_env.n_agents))*qvals_from_taget_critic
+                        if t == batch_obs.size(1) -1:
+                            targets =  batch_reward[:,t].unsqueeze(-1).expand(-1,eval_env.n_agents)
+                        else:
+                            actions_from_target_actor = target_actor.act(batch_obs[:,t+1],avail_action =batch_avail_action[:,t+1],hard=True)
+                            qvals_from_taget_critic = target_critic(batch_states[:,t+1],actions_from_target_actor)
+                            qvals_from_taget_critic = torch.nan_to_num(qvals_from_taget_critic, nan=0.0)
+                            targets = batch_reward[:,t].unsqueeze(-1).expand(-1,eval_env.n_agents) + args.gamma * (1-batch_done[:,t].unsqueeze(-1).expand(-1,eval_env.n_agents))*qvals_from_taget_critic
                     q_values =critic(batch_states[:,t],batch_action[:,t])
-                    critic_loss += F.mse_loss(targets[batch_mask[:,t]],q_values[batch_mask[:,t]]) * batch_mask[:,t].sum()
+                    critic_loss += F.mse_loss(targets[batch_mask[:,t]],q_values[batch_mask[:,t]]) * (batch_mask[:,t].sum())
                 critic_loss /= batch_mask.sum()
                 critic_optimizer.zero_grad()
                 critic_loss.backward()
@@ -468,8 +451,8 @@ if __name__ == "__main__":
                 
                 ## train the actor
                 actor_loss = 0
-                for t in range(batch_obs.size(1)-1):
-                    actions =  actor.act(batch_obs[:,t],avail_action =batch_avail_action[:,t],hard=True)
+                for t in range(batch_obs.size(1)):
+                    actions =  actor.act(batch_obs[:,t],avail_action =batch_avail_action[:,t],hard=False)
                     qvals = critic(batch_states[:,t],actions,grad_processing=True,batch_action=batch_action[:,t])
                     actor_loss -=  qvals[batch_mask[:,t]].sum()
                 actor_loss /= batch_mask.sum()
@@ -481,15 +464,17 @@ if __name__ == "__main__":
                 actor_losses.append(actor_loss.item())
                 actor_gradients.append(actor_gradient)
                 actor_optimizer.step()
-                    
-                    
+                
+                num_updates+= 1
+                        
             writer.add_scalar("train/critic_loss", np.mean(critic_losses), step)
             writer.add_scalar("train/actor_loss", np.mean(actor_losses), step)
             writer.add_scalar("train/actor_gradients", np.mean(actor_gradients) , step)
             writer.add_scalar("train/critic_gradients", np.mean(critic_gradients), step)
+            writer.add_scalar("train/num_updates", num_updates, step)
             
             
-            if (num_episode/args.num_envs) % args.target_network_update_freq == 0:
+            if (num_updates//args.epochs) % args.target_network_update_freq == 0:
                     soft_update(
                         target_net=target_critic,
                         utility_net=critic,
@@ -512,8 +497,8 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                eval_obs = torch.from_numpy(eval_obs).float()
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
                 logits = actor.logits(eval_obs, avail_action = mask_eval)
                 eval_actions  = torch.argmax(logits,dim=-1)
                 next_obs_, reward, done, truncated, infos = eval_env.step(eval_actions)

@@ -82,7 +82,7 @@ class Qnetwrok(nn.Module):
     def forward(self,x,h=None,avail_action=None):
         x = self.fc1(x)
         if h is None:
-            h = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+            h = torch.zeros(x.size(0), self.hidden_dim)
         h = self.gru(x,h)
         x = self.fc2(h)
         if avail_action is not None:
@@ -255,7 +255,7 @@ if __name__ == "__main__":
     while step < args.total_timesteps:
         episode = {"obs": [],"actions":[],"reward":[],"next_obs":[],"states":[], "next_states":[],"done":[],"avail_actions":[]}
         obs, _ = env.reset()
-        avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
+        avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
         state = env.get_state()
         ep_reward, ep_length = 0,0
         done, truncated = False, False
@@ -381,8 +381,8 @@ if __name__ == "__main__":
             current_ep_length = 0
             h_eval = None
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                eval_obs = torch.from_numpy(eval_obs).float()
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
                 q_values,h_eval = utility_network(eval_obs,h=h_eval, avail_action = mask_eval)
                 actions  = torch.argmax(q_values,dim=-1)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)

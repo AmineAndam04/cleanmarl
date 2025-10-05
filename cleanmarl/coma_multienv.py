@@ -373,9 +373,9 @@ if __name__ == "__main__":
         alive_envs = list(range(args.batch_size))      
         ep_reward, ep_length,ep_stat = [0]* args.batch_size,[0]* args.batch_size,[0]* args.batch_size
         while len(alive_envs) > 0:
-            obs = torch.from_numpy(obs).to(args.device).float()
-            avail_action = torch.tensor(avail_action, dtype=torch.bool, device=args.device)
-            state = torch.from_numpy(state).to(args.device).float()
+            obs = torch.from_numpy(obs).float()
+            avail_action = torch.tensor(avail_action, dtype=torch.bool)
+            state = torch.from_numpy(state).float()
             with torch.no_grad():
                 actions = actor.act(obs,eps=epsilon,avail_action=avail_action)
             for i,j in enumerate(alive_envs):
@@ -556,8 +556,8 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                eval_obs = torch.from_numpy(eval_obs).float()
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
 
                 with torch.no_grad():
                     actions = actor.act(eval_obs,avail_action=mask_eval)
