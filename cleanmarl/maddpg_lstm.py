@@ -357,9 +357,9 @@ if __name__ == "__main__":
                     actor_loss=  -qvals[batch_mask[:,t]].sum()
                     actor_losses += actor_loss
                     if truncated_actor_loss is  None:
-                            truncated_actor_loss = actor_loss
-                            actor_loss_denominator = batch_mask[:,t].sum()
-                            T = 1
+                        truncated_actor_loss = actor_loss
+                        actor_loss_denominator = batch_mask[:,t].sum()
+                        T = 1
                     else:
                         truncated_actor_loss += actor_loss
                         actor_loss_denominator += batch_mask[:,t].sum()

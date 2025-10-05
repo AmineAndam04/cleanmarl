@@ -589,7 +589,7 @@ if __name__ == "__main__":
         writer.add_scalar("train/actor_gradients", actor_gradients , step)
         writer.add_scalar("train/critic_gradients", critic_gradients, step)
         writer.add_scalar("train/epsilon", epsilon, step)
-        writer.add_scalar("train/train_steps", training_step, step)
+        writer.add_scalar("train/num_updates", training_step, step)
 
         if training_step % args.eval_steps == 0:
             eval_obs,_ = eval_env.reset()

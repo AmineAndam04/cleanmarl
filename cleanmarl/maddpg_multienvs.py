@@ -483,10 +483,6 @@ if __name__ == "__main__":
                         target_net=target_actor,
                         utility_net=actor,
                         polyak=args.polyak)
-                
-        
-        
-        
 
         if (num_episode/args.num_envs) % args.eval_steps == 0:
             eval_obs,_ = eval_env.reset()
