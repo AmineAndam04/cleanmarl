@@ -340,8 +340,7 @@ if __name__ == "__main__":
         state  = [content["state"] for content in contents]
         alive_envs = list(range(args.num_envs))
 
-        ep_reward, ep_length = [0]* args.num_envs,[0]* args.num_envs
-        
+        ep_reward, ep_length,ep_stat = [0]* args.num_envs,[0]* args.num_envs,[0]* args.num_envs
         while len(alive_envs) > 0:
             epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step)
             if random.random() < epsilon:
@@ -391,8 +390,8 @@ if __name__ == "__main__":
                     alive_envs.remove(j)
                     rb.store(episodes[j])
                     episodes[j] = dict()
-                    if args.env_type == 'smaclite':## Add battle won for smaclite
-                        ep_stats.append(infos[i]) 
+                    if args.env_type == 'smaclite':
+                        ep_stat[j] = infos[i]
                 else:
                     obs.append(next_obs[i]) 
                     temp_avail_action.append(avail_action[i]) 
@@ -405,6 +404,7 @@ if __name__ == "__main__":
         num_episodes += args.num_envs
         ep_rewards.extend(ep_reward)
         ep_lengths.extend(ep_length)
+        ep_stats.extend(ep_stat)
         
 
         if num_episodes > args.batch_size:
