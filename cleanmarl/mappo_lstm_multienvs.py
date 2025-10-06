@@ -1,3 +1,4 @@
+from multiprocessing import Pipe, Process
 import torch
 import tyro
 import datetime
@@ -180,6 +181,67 @@ def norm_d(grads, d):
     norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
     total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
     return total_norm_d
+class CloudpickleWrapper:
+    """
+    Uses cloudpickle to serialize contents (otherwise multiprocessing tries to use pickle)
+    """
+    def __init__(self, env):
+        self.env = env
+
+    def __getstate__(self):
+        import cloudpickle
+        return cloudpickle.dumps(self.env)
+
+    def __setstate__(self, env):
+        import pickle
+        self.env = pickle.loads(env)
+
+def env_worker(conn,env_serialized):
+    env = env_serialized.env
+    while True:
+        task,content = conn.recv()
+        if task == "reset":
+            obs,_  = env.reset(seed=random.randint(0, 100000))
+            avail_actions = env.get_avail_actions()
+            state = env.get_state()
+            content = {
+                "obs": obs,
+                "avail_actions": avail_actions,
+                "state":state
+            }
+            conn.send(content)
+        elif task == "get_env_info":
+            content = {
+                "obs_size":env.get_obs_size(),
+                "action_size":env.get_action_size(),
+                "n_agents": env.n_agents,
+                "state_size": env.get_state_size()
+            }
+            conn.send(content)
+        elif task == 'sample':
+            actions = env.sample()
+            content = {
+                'actions':actions
+            }
+            conn.send(content)
+        elif task == 'step':
+            next_obs, reward, done, truncated, infos = env.step(content)
+            avail_actions = env.get_avail_actions()
+            state = env.get_state()
+            content = {
+                "next_obs":next_obs,
+                "reward":reward,
+                "done":done,
+                "truncated":truncated,
+                "infos":infos,
+                "avail_actions":avail_actions,
+                "next_state": state 
+            }
+            conn.send(content)
+        elif task == "close":
+            env.close()
+            conn.close()
+            break
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -190,11 +252,20 @@ if __name__ == "__main__":
     torch.manual_seed(seed)
     ## import the environment 
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
-    env = environment(env_type= args.env_type,
+    conns = [Pipe() for _ in range(args.batch_size)]
+    mappo_conns, env_conns = zip(*conns)
+    envs = [CloudpickleWrapper(environment(env_type= args.env_type,
                       env_name=args.env_name,
                       env_family=args.env_family,
                       agent_ids=args.agent_ids,
-                      kwargs=kwargs)
+                      kwargs=kwargs)) for _ in range(args.batch_size)]
+    processes = [Process(
+        target=env_worker,
+        args=(env_conns[i],envs[i]))
+        for i in range(args.batch_size)]
+    for process in processes:
+            process.daemon = True
+            process.start()
     eval_env = environment(env_type= args.env_type,
                       env_name=args.env_name,
                       env_family=args.env_family,
@@ -203,11 +274,11 @@ if __name__ == "__main__":
     
     ## Initialize the actor, critic and target-critic networks
     actor = Actor(
-        input_dim=env.get_obs_size(),
+        input_dim=eval_env.get_obs_size(),
         hidden_dim=args.actor_hidden_dim,
-        output_dim=env.get_action_size()
+        output_dim=eval_env.get_action_size()
     )
-    critic = Critic(input_dim=env.get_state_size(),
+    critic = Critic(input_dim=eval_env.get_state_size(),
                     hidden_dim=args.critic_hidden_dim,
                     num_layer=args.critic_num_layers)
     
@@ -217,65 +288,111 @@ if __name__ == "__main__":
 
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
-    writer = SummaryWriter(f"runs/MAPPO-lstm-{run_name}")
+    writer = SummaryWriter(f"runs/MAPPO-lstm-multienv-{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     rb = RolloutBuffer( buffer_size=args.batch_size,
-                        obs_space= env.get_obs_size(),
-                        state_space=env.get_state_size(),
-                        action_space=env.get_action_size(),
-                        num_agents= env.n_agents,
+                        obs_space= eval_env.get_obs_size(),
+                        state_space=eval_env.get_state_size(),
+                        action_space=eval_env.get_action_size(),
+                        num_agents= eval_env.n_agents,
                         normalize_reward= args.normalize_reward)
     ep_rewards = []
     ep_lengths = []
     ep_stats = []
     training_step = 0
-    num_episodes = 0
     step = 0
     while step < args.total_timesteps:
-        num_episode = 0
-        while num_episode < args.batch_size:
-            episode = {"obs": [],"actions":[],"log_prob":[],"reward":[],"states":[],"done":[],"avail_actions":[]}
-            obs, _ = env.reset()
-            ep_reward, ep_length = 0,0
-            done, truncated = False, False
-            h= None
-            while not done and not truncated:
-                obs = torch.from_numpy(obs).float()
-                avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
-                state = torch.from_numpy(env.get_state()).float()
-                with torch.no_grad():
-                    actions,log_probs,h = actor.act(obs,h=h,avail_action=avail_action)
-                next_obs, reward, done, truncated, infos = env.step(actions)
-                ep_reward += reward
-                ep_length += 1
-                step +=1
-
-                episode["obs"].append(obs)
-                episode["actions"].append(actions)
-                episode["log_prob"].append(log_probs)
-                episode["reward"].append(reward)
-                episode["done"].append(done)
-                episode["avail_actions"].append(avail_action)
-                episode["states"].append(state)
-                
-                obs = next_obs 
+        episodes = [{"obs": [],"actions":[],"log_prob":[],"reward":[],"states":[],"done":[],"avail_actions":[]}
+                for _ in range(args.batch_size)]
+        
+        for mappo_conn in mappo_conns:
+            mappo_conn.send(("reset",None))
+        contents = [mappo_conn.recv() for mappo_conn in mappo_conns]
+        obs  = np.stack([content["obs"] for content in contents],axis=0)
+        avail_action = np.stack([content["avail_actions"] for content in contents],axis=0)
+        state  = np.stack([content["state"] for content in contents])
+        alive_envs = list(range(args.batch_size))
+        ep_reward, ep_length,ep_stat = [0]* args.batch_size,[0]* args.batch_size,[0]* args.batch_size
+        h = None
+        while len(alive_envs) > 0:
+            obs = torch.from_numpy(obs).float()
+            avail_action = torch.tensor(avail_action, dtype=torch.bool)
+            state = torch.from_numpy(state).float()
+            with torch.no_grad():
+                obs = obs.reshape(len(alive_envs)*eval_env.n_agents,-1)
+                avail_action = avail_action.reshape(len(alive_envs)*eval_env.n_agents,-1)
+                # use the hidden tensor just for live environments
+                if h is None:
+                    alive_h = None
+                else:
+                    alive_h = h.reshape(args.batch_size,eval_env.n_agents,-1)
+                    alive_h = alive_h[alive_envs].reshape(len(alive_envs)*eval_env.n_agents,-1)
+                actions,log_probs,alive_h = actor.act(obs,h=alive_h,avail_action=avail_action)
+                if h is None:
+                    h = alive_h
+                else:
+                    h = h.reshape(args.batch_size,eval_env.n_agents,-1)
+                    alive_h = alive_h.reshape(len(alive_envs),eval_env.n_agents,-1)
+                    h[alive_envs] = alive_h
+                    h = h.reshape(args.batch_size*eval_env.n_agents,-1)
+                obs = obs.reshape(len(alive_envs),eval_env.n_agents,-1)
+                avail_action = avail_action.reshape(len(alive_envs),eval_env.n_agents,-1)
+                actions = actions.reshape(len(alive_envs),eval_env.n_agents)
+                log_probs = log_probs.reshape(len(alive_envs),eval_env.n_agents)
+            for i,j in enumerate(alive_envs):
+                mappo_conns[j].send(("step",actions[i]))
             
-            rb.add(episode)
-            ep_rewards.append(ep_reward)
-            ep_lengths.append(ep_length)
-            if args.env_type == 'smaclite':
-                ep_stats.append(infos) 
-            num_episode += 1
-        num_episodes += args.batch_size
+            contents = [mappo_conns[i].recv() for i in alive_envs]
+            next_obs =[content["next_obs"] for content in contents]
+            reward = [content["reward"]   for content in contents]
+            done = [content["done"]     for content in contents]
+            truncated = [content["truncated"]     for content in contents]
+            infos = [content.get("infos") for content in contents]
+            next_avail_action = [content["avail_actions"] for content in contents]
+            next_state = [content["next_state"]for content in contents]
+            for i,j in enumerate(alive_envs):
+                episodes[j]["obs"].append(obs[i])
+                episodes[j]["actions"].append(actions[i])
+                episodes[j]["log_prob"].append(log_probs[i])
+                episodes[j]["reward"].append(reward[i])
+                episodes[j]["states"].append(state[i])
+                episodes[j]["done"].append(done[i])
+                episodes[j]["avail_actions"].append(avail_action[i])
+                ep_reward[j] += reward[i]
+                ep_length[j] += 1
+            step += len(alive_envs)
+            obs = []
+            state = []
+            avail_action = []
+            for i,j in enumerate(alive_envs[:]):
+                if done[i] or truncated[i]:
+                    alive_envs.remove(j)
+                    rb.add(episodes[j])
+                    episodes[j] = dict()
+                    if args.env_type == 'smaclite':
+                        ep_stat[j] = infos[i]
+                else:
+                    obs.append(next_obs[i]) 
+                    avail_action.append(next_avail_action[i]) 
+                    state.append(next_state[i])
+            if obs:
+                obs = np.stack(obs,axis=0)
+                avail_action = np.stack(avail_action,axis=0)
+                state = np.stack(state,axis=0)
+            
+
         ## logging
-        if len(ep_rewards) > args.log_every:
+        ep_rewards.extend(ep_reward)
+        ep_lengths.extend(ep_length)
+        ep_stats.extend(ep_stat)
+        if training_step %  args.log_every == 0:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
-            writer.add_scalar("rollout/num_episodes",num_episodes,step)
+            writer.add_scalar("rollout/num_episodes",training_step *args.batch_size,step)
             if args.env_type == 'smaclite':
                 writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
             ep_rewards = []
@@ -331,10 +448,10 @@ if __name__ == "__main__":
             for t in range(b_obs.size(1)):
                 # policy gradient (PG) loss
                 ## PG: compute the ratio:
-                b_obs_t = b_obs[:,t].reshape(args.batch_size*env.n_agents,-1)
-                b_avail_actions_t = b_avail_actions[:,t].reshape(args.batch_size*env.n_agents,-1)
+                b_obs_t = b_obs[:,t].reshape(args.batch_size*eval_env.n_agents,-1)
+                b_avail_actions_t = b_avail_actions[:,t].reshape(args.batch_size*eval_env.n_agents,-1)
                 current_logits,h = actor.logits(x= b_obs_t,h=h,avail_action=b_avail_actions_t)
-                current_logits = current_logits.reshape(args.batch_size,env.n_agents,-1)
+                current_logits = current_logits.reshape(args.batch_size,eval_env.n_agents,-1)
                 current_dist = Categorical(logits=current_logits)
                 current_logprob = current_dist.log_prob(b_actions[:,t])
                 log_ratio = current_logprob -b_log_probs[:,t]
@@ -370,7 +487,7 @@ if __name__ == "__main__":
                     truncated_actor_loss = None
                     h = h.detach()
                 # Compute the value loss
-                current_values = critic(x = b_states[:,t]).expand(-1,env.n_agents)
+                current_values = critic(x = b_states[:,t]).expand(-1,eval_env.n_agents)
                 value_loss = F.mse_loss(current_values[b_mask[:,t]],return_lambda[:,t][b_mask[:,t]])* (b_mask[:,t].sum())
                 critic_loss += value_loss
 
