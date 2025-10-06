@@ -304,6 +304,7 @@ if __name__ == "__main__":
     ep_lengths = []
     ep_stats = []
     training_step = 0
+    num_episodes = 0
     step = 0
     while step < args.total_timesteps:
         episodes = [{"obs": [],"actions":[],"log_prob":[],"reward":[],"states":[],"done":[],"avail_actions":[]}
@@ -384,7 +385,7 @@ if __name__ == "__main__":
                 avail_action = np.stack(avail_action,axis=0)
                 state = np.stack(state,axis=0)
             
-
+        num_episodes += args.batch_size
         ## logging
         ep_rewards.extend(ep_reward)
         ep_lengths.extend(ep_length)
@@ -392,7 +393,7 @@ if __name__ == "__main__":
         if training_step %  args.log_every == 0:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
-            writer.add_scalar("rollout/num_episodes",training_step *args.batch_size,step)
+            writer.add_scalar("rollout/num_episodes",num_episodes,step)
             if args.env_type == 'smaclite':
                 writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
             ep_rewards = []
@@ -527,7 +528,7 @@ if __name__ == "__main__":
         writer.add_scalar("train/clipped_ratios", np.mean(clipped_ratios), step)
         writer.add_scalar("train/actor_gradients", np.mean(actor_gradients) , step)
         writer.add_scalar("train/critic_gradients", np.mean(critic_gradients), step)
-        writer.add_scalar("train/training_step", training_step, step)
+        writer.add_scalar("train/num_updates", training_step, step)
         
 
         if (training_step/args.epochs) % args.eval_steps == 0:

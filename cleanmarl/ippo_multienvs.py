@@ -31,27 +31,27 @@ class Args:
     """ Hidden dimension of actor network"""
     actor_num_layers: int = 1
     """ Number of hidden layers of actor network"""
-    critic_hidden_dim: int = 64
+    critic_hidden_dim: int = 32
     """ Hidden dimension of critic network"""
     critic_num_layers: int = 1
     """ Number of hidden layers of critic network"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate_actor: float =  0.0003
+    learning_rate_actor: float =  0.0008
     """ Learning rate for the actor"""
-    learning_rate_critic: float =  0.0003
+    learning_rate_critic: float =  0.0008
     """ Learning rate for the critic"""
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
     gamma: float = 0.99
     """ Discount factor"""
-    td_lambda: float = 0.9
+    td_lambda: float = 0.95
     """ TD(λ) discount factor"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
-    normalize_advantage: bool = True
+    normalize_advantage: bool = False
     """ Normalize the advantage if True"""
-    normalize_return: bool = True
+    normalize_return: bool = False
     """ Normalize the returns if True"""
     log_every: int = 10
     """ Logging steps """
@@ -67,7 +67,7 @@ class Args:
     """ Random seed"""
     device: str ="cpu"
     """ Device (cpu, gpu, mps)"""
-    eval_steps: int = 10
+    eval_steps: int = 50
     """ Evaluate the policy each «eval_steps» training steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
@@ -184,10 +184,6 @@ def norm_d(grads, d):
     norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
     total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
     return total_norm_d
-def soft_update(target_net, critic_net, polyak):
-        print("did updated it ")
-        for target_param, param in zip(target_net.parameters(), critic_net.parameters()):
-            target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
 
 class CloudpickleWrapper:
     """
@@ -253,6 +249,7 @@ def env_worker(conn,env_serialized):
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+    # Set the random seeds
     seed = args.seed
     random.seed(seed)
     np.random.seed(seed)
@@ -296,7 +293,7 @@ if __name__ == "__main__":
 
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
-    writer = SummaryWriter(f"runs/IPPO-multienv-{run_name}")
+    writer = SummaryWriter(f"runs/IPPO-multienvs-{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -308,11 +305,12 @@ if __name__ == "__main__":
                         action_space=eval_env.get_action_size(),
                         num_agents= eval_env.n_agents,
                         normalize_reward= args.normalize_reward)
-    step = 0
-    training_step = 0
     ep_rewards = []
     ep_lengths = []
     ep_stats = []
+    training_step = 0
+    num_episodes = 0
+    step = 0
     while step < args.total_timesteps:
         episodes = [{"obs": [],"actions":[],"log_prob":[],"reward":[],"states":[],"done":[],"avail_actions":[]}
                 for _ in range(args.batch_size)]
@@ -374,6 +372,8 @@ if __name__ == "__main__":
                 obs = np.stack(obs,axis=0)
                 avail_action = np.stack(avail_action,axis=0)
                 state = np.stack(state,axis=0)
+        
+        num_episodes += args.batch_size
         ep_rewards.extend(ep_reward)
         ep_lengths.extend(ep_length)
         if args.env_type == 'smaclite':
@@ -382,6 +382,7 @@ if __name__ == "__main__":
         if len(ep_rewards) > args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+            writer.add_scalar("rollout/num_episodes",num_episodes,step)
             if args.env_type == 'smaclite':
                 writer.add_scalar("rollout/battle_won",np.mean(ep_stats), step)
             ep_rewards = []
@@ -435,22 +436,22 @@ if __name__ == "__main__":
                 ## Compute PG the loss
                 pg_loss1 = advantages[:,t] * ratio
                 pg_loss2 = advantages[:,t] * torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip)
-                pg_loss = torch.min(pg_loss1[b_mask[:,t]], pg_loss2[b_mask[:,t]]).mean()
+                pg_loss = torch.min(pg_loss1[b_mask[:,t]], pg_loss2[b_mask[:,t]]).mean(dim=-1).sum()
 
                 # Compute entropy bonus
-                entropy_loss = current_dist.entropy()[b_mask[:,t]].mean()
+                entropy_loss = current_dist.entropy()[b_mask[:,t]].mean(dim=-1).sum()
                 entropies += entropy_loss
                 actor_loss += -pg_loss - args.entropy_coef*entropy_loss
 
                 # Compute the value loss
                 current_values = critic(x = b_obs[:,t])
-                value_loss = F.mse_loss(current_values[b_mask[:,t]],return_lambda[:,t][b_mask[:,t]])
+                value_loss = F.mse_loss(current_values[b_mask[:,t]],return_lambda[:,t][b_mask[:,t]])* (b_mask[:,t].sum())
                 critic_loss += value_loss
 
                 # track kl distance
-                b_kl_divergence = ((ratio -1) -log_ratio)[b_mask[:,t]].mean()
+                b_kl_divergence = ((ratio -1) -log_ratio)[b_mask[:,t]].mean(dim=-1).sum()
                 kl_divergence+=b_kl_divergence
-                clipped_ratio += ((ratio - 1.0).abs() > args.ppo_clip)[b_mask[:,t]].float().mean()
+                clipped_ratio += ((ratio - 1.0).abs() > args.ppo_clip)[b_mask[:,t]].float().mean(dim=-1).sum()
             actor_loss /= b_mask.sum()
             critic_loss /= b_mask.sum()
             entropies /= b_mask.sum()
@@ -471,6 +472,7 @@ if __name__ == "__main__":
                 torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=args.clip_gradients)
             actor_optimizer.step()
             critic_optimizer.step()
+            training_step+= 1
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())
             entropies_bonuses.append(entropies.item())
@@ -486,9 +488,9 @@ if __name__ == "__main__":
         writer.add_scalar("train/clipped_ratios", np.mean(clipped_ratios), step)
         writer.add_scalar("train/actor_gradients", np.mean(actor_gradients) , step)
         writer.add_scalar("train/critic_gradients", np.mean(critic_gradients), step)
-        training_step+= 1
+        writer.add_scalar("train/num_updates",training_step, step)
 
-        if training_step % args.eval_steps == 0:
+        if (training_step/args.epochs)  % args.eval_steps == 0:
             eval_obs,_ = eval_env.reset()
             eval_ep = 0
             eval_ep_reward = []

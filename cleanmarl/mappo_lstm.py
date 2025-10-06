@@ -410,7 +410,7 @@ if __name__ == "__main__":
         writer.add_scalar("train/clipped_ratios", np.mean(clipped_ratios), step)
         writer.add_scalar("train/actor_gradients", np.mean(actor_gradients) , step)
         writer.add_scalar("train/critic_gradients", np.mean(critic_gradients), step)
-        writer.add_scalar("train/training_step", training_step, step)
+        writer.add_scalar("train/num_updates", training_step, step)
         
 
         if (training_step/args.epochs) % args.eval_steps == 0:

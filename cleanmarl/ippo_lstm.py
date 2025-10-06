@@ -36,27 +36,27 @@ class Args:
     """ Number of hidden layers of critic network"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate_actor: float =  0.0005
+    learning_rate_actor: float =  0.0008
     """ Learning rate for the actor"""
-    learning_rate_critic: float =  0.0005
+    learning_rate_critic: float =  0.0008
     """ Learning rate for the critic"""
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
     gamma: float = 0.99
     """ Discount factor"""
-    td_lambda: float = 0.9
+    td_lambda: float = 0.95
     """ TD(λ) discount factor"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
-    normalize_advantage: bool = True
+    normalize_advantage: bool = False
     """ Normalize the advantage if True"""
-    normalize_return: bool = True
+    normalize_return: bool = False
     """ Normalize the returns if True"""
     log_every: int = 10
     """ Logging steps """
-    ppo_clip: float = 0.1
+    ppo_clip: float = 0.2
     """ PPO clipping factor """
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.001
     """ Entropy coefficient """
     epochs: int = 3
     """ Number of training epochs"""
@@ -66,7 +66,7 @@ class Args:
     """ Random seed"""
     device: str ="cpu"
     """ Device (cpu, gpu, mps)"""
-    eval_steps: int = 10
+    eval_steps: int = 50
     """ Evaluate the policy each «eval_steps» training steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
@@ -142,7 +142,7 @@ class Actor(nn.Module):
     def logits(self,x,h=None,avail_action=None):
         x = self.fc1(x)
         if h is None:
-            h = torch.zeros(x.size(0), self.hidden_dim, device=x.device)
+            h = torch.zeros(x.size(0), self.hidden_dim)
         h = self.gru(x,h)
         x = self.fc2(h)
         if avail_action is not None:
@@ -185,14 +185,11 @@ def norm_d(grads, d):
     norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
     total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
     return total_norm_d
-def soft_update(target_net, critic_net, polyak):
-        print("did updated it ")
-        for target_param, param in zip(target_net.parameters(), critic_net.parameters()):
-            target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
 
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+    # Set random seed
     seed = args.seed
     random.seed(seed)
     np.random.seed(seed)
@@ -237,11 +234,12 @@ if __name__ == "__main__":
                         action_space=env.get_action_size(),
                         num_agents= env.n_agents,
                         normalize_reward= args.normalize_reward)
-    step = 0
-    training_step = 0
     ep_rewards = []
     ep_lengths = []
     ep_stats = []
+    training_step = 0
+    num_episodes = 0
+    step = 0
     while step < args.total_timesteps:
         num_episode = 0
         while num_episode < args.batch_size:
@@ -251,9 +249,9 @@ if __name__ == "__main__":
             done, truncated = False, False
             h= None
             while not done and not truncated:
-                obs = torch.from_numpy(obs).to(args.device).float()
-                avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool, device=args.device)
-                state = torch.from_numpy(env.get_state()).to(args.device).float()
+                obs = torch.from_numpy(obs).float()
+                avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
+                state = torch.from_numpy(env.get_state()).float()
                 with torch.no_grad():
                     actions,log_probs,h = actor.act(obs,h=h,avail_action=avail_action)
                 next_obs, reward, done, truncated, infos = env.step(actions)
@@ -278,12 +276,14 @@ if __name__ == "__main__":
                 ep_stats.append(infos) 
             num_episode += 1
         
+        num_episodes += args.batch_size
         ## logging
         if len(ep_rewards) > args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
+            writer.add_scalar("rollout/num_episodes",num_episodes,step)
             if args.env_type == 'smaclite':
-                writer.add_scalar("rollout/battle_won",np.mean(np.mean([info["battle_won"] for info in ep_stats])), step)
+                writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
             ep_rewards = []
             ep_lengths = []
             ep_stats   = []
@@ -328,6 +328,7 @@ if __name__ == "__main__":
             h = None
             truncated_actor_loss = None
             actor_loss_denominator = None
+            T = None
             for t in range(b_obs.size(1)):
                 # policy gradient (PG) loss
                 ## PG: compute the ratio:
@@ -342,22 +343,24 @@ if __name__ == "__main__":
                 ## Compute PG the loss
                 pg_loss1 = advantages[:,t] * ratio
                 pg_loss2 = advantages[:,t] * torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip)
-                pg_loss = torch.min(pg_loss1[b_mask[:,t]], pg_loss2[b_mask[:,t]]).mean()
+                pg_loss = torch.min(pg_loss1[b_mask[:,t]], pg_loss2[b_mask[:,t]]).mean(dim=-1).sum()
 
                 # Compute entropy bonus
-                entropy_loss = current_dist.entropy()[b_mask[:,t]].mean()
+                entropy_loss = current_dist.entropy()[b_mask[:,t]].mean(dim=-1).sum()
                 entropies += entropy_loss
                 actor_loss = -pg_loss - args.entropy_coef*entropy_loss
                 total_actor_loss += actor_loss
                 if truncated_actor_loss is  None:
                     truncated_actor_loss = actor_loss
                     actor_loss_denominator = (b_mask[:,t].sum())
+                    T = 1
                 else:
                     truncated_actor_loss += actor_loss
                     actor_loss_denominator += (b_mask[:,t].sum())
-
+                    T += 1
                 if ((t+1) % args.tbptt == 0) or (t == (b_obs.size(1)-1)):
-                    truncated_actor_loss = truncated_actor_loss/actor_loss_denominator
+                    # For more details: https://d2l.ai/chapter_recurrent-neural-networks/bptt.html#equation-eq-bptt-partial-ht-wh-gen
+                    truncated_actor_loss = truncated_actor_loss/(actor_loss_denominator*T)
                     actor_optimizer.zero_grad()
                     truncated_actor_loss.backward()
                     tbptt_actor_gradients = norm_d([p.grad for p in actor.parameters() ],2)
@@ -370,13 +373,13 @@ if __name__ == "__main__":
 
                 # Compute the value loss
                 current_values = critic(x = b_obs[:,t])
-                value_loss = F.mse_loss(current_values[b_mask[:,t]],return_lambda[:,t][b_mask[:,t]])
+                value_loss = F.mse_loss(current_values[b_mask[:,t]],return_lambda[:,t][b_mask[:,t]])* (b_mask[:,t].sum())
                 critic_loss += value_loss
 
                 # track kl distance
-                b_kl_divergence = ((ratio -1) -log_ratio)[b_mask[:,t]].mean()
+                b_kl_divergence = ((ratio -1) -log_ratio)[b_mask[:,t]].mean(dim=-1).sum()
                 kl_divergence+=b_kl_divergence
-                clipped_ratio += ((ratio - 1.0).abs() > args.ppo_clip)[b_mask[:,t]].float().mean()
+                clipped_ratio += ((ratio - 1.0).abs() > args.ppo_clip)[b_mask[:,t]].float().mean(dim=-1).sum()
             total_actor_loss /= b_mask.sum()
             critic_loss /= b_mask.sum()
             entropies /= b_mask.sum()
@@ -393,6 +396,7 @@ if __name__ == "__main__":
 
             critic_optimizer.step()
 
+            training_step+= 1
             actor_losses.append(total_actor_loss.item())
             critic_losses.append(critic_loss.item())
             entropies_bonuses.append(entropies.item())
@@ -408,9 +412,9 @@ if __name__ == "__main__":
         writer.add_scalar("train/clipped_ratios", np.mean(clipped_ratios), step)
         writer.add_scalar("train/actor_gradients", np.mean(actor_gradients) , step)
         writer.add_scalar("train/critic_gradients", np.mean(critic_gradients), step)
-        training_step+= 1
+        writer.add_scalar("train/num_updates", training_step, step)
 
-        if training_step % args.eval_steps == 0:
+        if (training_step/args.epochs) % args.eval_steps == 0:
             eval_obs,_ = eval_env.reset()
             eval_ep = 0
             eval_ep_reward = []
@@ -420,8 +424,8 @@ if __name__ == "__main__":
             current_ep_length = 0
             h_eval = None
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).to(args.device).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool, device=args.device)
+                eval_obs = torch.from_numpy(eval_obs).float()
+                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
                 with torch.no_grad():
                     actions,_,h_eval = actor.act(eval_obs,h=h_eval,avail_action=mask_eval)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
@@ -441,7 +445,7 @@ if __name__ == "__main__":
             writer.add_scalar("eval/std_ep_reward",np.std(eval_ep_reward), step)
             writer.add_scalar("eval/ep_length",np.mean(eval_ep_length), step)
             if args.env_type == 'smaclite':
-                writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)
+                writer.add_scalar("eval/battle_won",np.mean([info["battle_won"] for info in eval_ep_stats]), step)
                 
 
 
