@@ -71,7 +71,7 @@ class Args:
     """ Evaluate the policy each «eval_steps» training steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
-    tbptt:int = 10
+    tbptt:int = 5
     """Chunck size for Truncated Backpropagation Through Time tbptt"""
 
 

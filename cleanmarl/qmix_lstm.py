@@ -33,7 +33,7 @@ class Args:
     """ Train the network each «train_freq» step in the environment"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate: float =  0.0005
+    learning_rate: float =  0.0008
     """ Learning rate"""
     batch_size: int = 10
     """ Batch size"""
@@ -303,6 +303,7 @@ if __name__ == "__main__":
                 h_utility = None
                 truncated_actor_loss = None
                 actor_loss_denominator = None
+                T = None
                 for t in range(batch_obs.size(1)):
                     with torch.no_grad():
                         batch_next_obs_t = batch_next_obs[:,t].reshape(args.batch_size*env.n_agents,-1)
@@ -323,13 +324,13 @@ if __name__ == "__main__":
                     if truncated_actor_loss is  None:
                         truncated_actor_loss = td_loss
                         actor_loss_denominator = batch_mask[:,t].sum()
+                        T = 1
                     else:
                         truncated_actor_loss += td_loss
                         actor_loss_denominator += batch_mask[:,t].sum()
-
+                        T += 1
                     if ((t+1) % args.tbptt == 0) or (t == (batch_obs.size(1)-1)):
                         # For more details: https://d2l.ai/chapter_recurrent-neural-networks/bptt.html#equation-eq-bptt-partial-ht-wh-gen
-                        T = args.tbptt if ((t+1) % args.tbptt == 0) else (batch_obs.size(1)-1)
                         truncated_actor_loss = truncated_actor_loss/(actor_loss_denominator*T)
                         optimizer.zero_grad()
                         truncated_actor_loss.backward()

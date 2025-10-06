@@ -539,6 +539,7 @@ if __name__ == "__main__":
         h = None
         truncated_actor_loss = None
         actor_loss_denominator = None
+        T = None
         for t in range(b_obs.size(1)):
             b_obs_t = b_obs[:,t].reshape(args.batch_size*eval_env.n_agents,-1)
             b_avail_actions_t = b_avail_actions[:,t].reshape(args.batch_size*eval_env.n_agents,-1)
@@ -563,12 +564,13 @@ if __name__ == "__main__":
             if truncated_actor_loss is  None:
                     truncated_actor_loss = actor_loss
                     actor_loss_denominator = (b_mask[:,t].sum())
+                    T = 1
             else:
                 truncated_actor_loss += actor_loss
                 actor_loss_denominator += (b_mask[:,t].sum())
+                T += 1
             if ((t+1) % args.tbptt == 0) or (t == (b_obs.size(1)-1)):
                 # For more details: https://d2l.ai/chapter_recurrent-neural-networks/bptt.html#equation-eq-bptt-partial-ht-wh-gen
-                T = args.tbptt if ((t+1) % args.tbptt == 0) else (b_obs.size(1)-1)
                 truncated_actor_loss = truncated_actor_loss/(actor_loss_denominator*T)
                 actor_optimizer.zero_grad()
                 truncated_actor_loss.backward()
