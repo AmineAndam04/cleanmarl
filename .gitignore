@@ -3,9 +3,11 @@
 /Resources
 **/__pycache__/
 /.vscode
+.vscode/
 /cleanmarl/runs
 /tests
 /runs_hpc
+/wandb
 /smaclite
 /.DS_Store
 /.vscode

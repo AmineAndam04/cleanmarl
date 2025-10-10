@@ -67,6 +67,12 @@ class Args:
     """ Evaluate the policy each eval_steps steps. The used value is eval_steps*num_envs"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
+    use_wnb: bool = False
+    """ Logging to Weights & Biases if True"""
+    wnb_project: str = ""
+    """ Weights & Biases project name"""
+    wnb_entity: str = ""
+    """ Weights & Biases entity name"""
     device: str ="cpu"
     """ Device (cpu, gpu, mps)"""
     seed: int  = 1
@@ -203,8 +209,17 @@ if __name__ == "__main__":
         normalize_reward= args.normalize_reward
     )
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{args.env_type}__{args.env_name}__RNN__{time_token}"
-    writer = SummaryWriter(f"runs/VDN-lstm{run_name}")
+    run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    if args.use_wnb:
+        import wandb
+        wandb.init(
+                project=args.wnb_project,
+                entity=args.wnb_entity,
+                sync_tensorboard=True,
+                config=vars(args),
+                name=f'VDN-{run_name}'
+            )
+    writer = SummaryWriter(f"runs/VDN-lstm-{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -357,6 +372,10 @@ if __name__ == "__main__":
                 writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)
                 
 
-
+    writer.close()
+    if args.use_wnb:
+        wandb.finish()
+    env.close()
+    eval_env.close()
 
 

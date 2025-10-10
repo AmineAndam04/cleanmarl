@@ -52,8 +52,6 @@ class Args:
     """ Normalize the advantage if True"""
     normalize_return: bool = False
     """ Normalize the returns if True"""
-    log_every: int = 10
-    """ Logging steps """
     ppo_clip: float = 0.2
     """ PPO clipping factor """
     entropy_coef: float = 0.001
@@ -62,14 +60,22 @@ class Args:
     """ Number of training epochs"""
     clip_gradients: int = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
-    seed: int  = 1
-    """ Random seed"""
-    device: str ="cpu"
-    """ Device (cpu, gpu, mps)"""
+    log_every: int = 10
+    """ Logging steps """
     eval_steps: int = 50
     """ Evaluate the policy each «eval_steps» training steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
+    use_wnb: bool = False
+    """ Logging to Weights & Biases if True"""
+    wnb_project: str = ""
+    """ Weights & Biases project name"""
+    wnb_entity: str = ""
+    """ Weights & Biases entity name"""
+    device: str ="cpu"
+    """ Device (cpu, gpu, mps)"""
+    seed: int  = 1
+    """ Random seed"""
 
 
 class  RolloutBuffer():
@@ -220,6 +226,15 @@ if __name__ == "__main__":
 
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    if args.use_wnb:
+        import wandb
+        wandb.init(
+                project=args.wnb_project,
+                entity=args.wnb_entity,
+                sync_tensorboard=True,
+                config=vars(args),
+                name=f'IPPO-{run_name}'
+            )
     writer = SummaryWriter(f"runs/IPPO-{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -419,6 +434,11 @@ if __name__ == "__main__":
                 writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)
                 
 
+    writer.close()
+    if args.use_wnb:
+        wandb.finish()
+    env.close()
+    eval_env.close()
 
 
         

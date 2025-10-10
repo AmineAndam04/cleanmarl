@@ -57,10 +57,6 @@ class Args:
     """ Polyak coefficient when using polyak averaging for target network update"""
     eval_steps: int = 10
     """ Evaluate the policy each «eval_steps» training steps"""
-    num_eval_ep: int = 10
-    """ Number of evaluation episodes"""
-    entropy_coef: float = 0.001
-    """ Entropy coefficient """
     use_tdlamda: bool = True
     """ Use TD(λ) as a target for the critic, if False use n-step returns (n=nsteps) """
     nsteps : int = 1
@@ -73,14 +69,24 @@ class Args:
     """ The number of training steps it takes from to go from start_e to  end_e"""
     clip_gradients: int = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
-    log_every: int = 10
-    """ Log rollout stats every log_every episode"""
     tbptt:int = 10
     """Chunck size for Truncated Backpropagation Through Time tbptt"""
-    seed: int  = 1
-    """ Random seed"""
+    log_every: int = 10
+    """ Log rollout stats every log_every episode"""
+    num_eval_ep: int = 10
+    """ Number of evaluation episodes"""
+    entropy_coef: float = 0.001
+    """ Entropy coefficient """
+    use_wnb: bool = False
+    """ Logging to Weights & Biases if True"""
+    wnb_project: str = ""
+    """ Weights & Biases project name"""
+    wnb_entity: str = ""
+    """ Weights & Biases entity name"""
     device: str ="cpu"
     """ Device (cpu, gpu, mps)"""
+    seed: int  = 1
+    """ Random seed"""
 
 class  RolloutBuffer():
     def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False):
@@ -271,6 +277,15 @@ if __name__ == "__main__":
 
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    if args.use_wnb:
+        import wandb
+        wandb.init(
+                project=args.wnb_project,
+                entity=args.wnb_entity,
+                sync_tensorboard=True,
+                config=vars(args),
+                name=f'COMA-lstm-{run_name}'
+            )
     writer = SummaryWriter(f"runs/COMA-lstm-{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -507,6 +522,11 @@ if __name__ == "__main__":
             if args.env_type == 'smaclite':
                 writer.add_scalar("eval/battle_won",np.mean([info["battle_won"] for info in eval_ep_stats]), step)
                 
+    writer.close()
+    if args.use_wnb:
+        wandb.finish()
+    env.close()
+    eval_env.close()
 
 
 
