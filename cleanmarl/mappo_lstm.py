@@ -59,7 +59,7 @@ class Args:
     """ Entropy coefficient """
     tbptt:int = 10
     """Chunck size for Truncated Backpropagation Through Time tbptt"""
-    clip_gradients: int = -1
+    clip_gradients: float= -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     log_every: int = 10
     """ Logging steps """

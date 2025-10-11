@@ -5,7 +5,7 @@
 /.vscode
 .vscode/
 /cleanmarl/runs
-/tests
+/mp_tests
 /runs_hpc
 /wandb
 /smaclite

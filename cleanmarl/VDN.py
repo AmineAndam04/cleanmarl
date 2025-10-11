@@ -57,7 +57,7 @@ class Args:
     """ Polyak coefficient when using polyak averaging for target network update"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
-    clip_gradients: int = 5
+    clip_gradients: float = 5
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     log_every: int = 10
     """ Log rollout stats every <log_every> episode """
@@ -325,7 +325,7 @@ if __name__ == "__main__":
             writer.add_scalar("eval/std_ep_reward",np.std(eval_ep_reward), step)
             writer.add_scalar("eval/ep_length",np.mean(eval_ep_length), step)
             if args.env_type == 'smaclite':
-                writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)
+                writer.add_scalar("eval/battle_won",np.mean([info["battle_won"] for info in eval_ep_stats]), step)
                 
     
     writer.close()

@@ -44,7 +44,7 @@ class Args:
     """ Learning rate"""
     batch_size: int = 16
     """ Batch size, the actual batch_size is (batch_size*num_envs)"""
-    clip_gradients: int = 5
+    clip_gradients: float = 5
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     start_e: float = 1
     """ The starting value of epsilon, for exploration"""
@@ -421,7 +421,7 @@ if __name__ == "__main__":
             writer.add_scalar("eval/std_ep_reward",np.std(eval_ep_reward), step)
             writer.add_scalar("eval/ep_length",np.mean(eval_ep_length), step)
             if args.env_type == 'smaclite':
-                writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)
+                writer.add_scalar("eval/battle_won",np.mean([info["battle_won"] for info in eval_ep_stats]), step)
                 
 
     writer.close()

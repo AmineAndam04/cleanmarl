@@ -56,16 +56,16 @@ class Args:
     """ Update the target network each target_network_update_freq» step in the environment"""
     polyak: float = 0.005
     """ Polyak coefficient when using polyak averaging for target network update"""
-    clip_gradients: int = -1
+    clip_gradients: float = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     n_epochs: int = 2
     """ Number of batches sampled in one update"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     log_every: int = 10
-    """ Logging steps """
+    """ Log rollout stats every <log_every> network update """
     eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» steps"""
+    """ Evaluate the policy each «eval_steps» network update """
     num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     use_wnb: bool = False

@@ -58,7 +58,7 @@ class Args:
     """ PPO clipping factor """
     entropy_coef: float = 0.001
     """ Entropy coefficient """
-    clip_gradients: int = -1
+    clip_gradients: float= -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     log_every: int = 10
     """ Logging steps """

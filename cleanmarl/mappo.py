@@ -59,7 +59,7 @@ class Args:
     """ Entropy coefficient """
     log_every: int = 10
     """ Logging steps """
-    clip_gradients: int = -1
+    clip_gradients: float= -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     eval_steps: int = 10
     """ Evaluate the policy each «eval_steps» training steps"""

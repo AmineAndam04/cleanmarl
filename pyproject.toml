@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "cmeanmarl"
+version = "0.0.1"
+authors = [
+  { name="Amine Andam", email="andamamine83@gmail.com" },
+]
+description = "Single file implementations of Deep Multi-Agent Reinforcement Learning algorithms"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+
+[project.urls]
+Homepage = "https://cleanmarl-docs.readthedocs.io/en/latest/"
+
+dependencies = [
+    "tensorboard>=2.12.1",
+    "wandb==0.21.1",
+    "gym==0.23.1",
+    "gymnasium==0.29.1",
+    "torch==2.4.1",
+    "tyro==0.9.19",
+    "numpy==1.26.4",
+    "lbforaging==2.0.0",
+]

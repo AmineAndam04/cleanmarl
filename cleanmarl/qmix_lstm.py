@@ -55,14 +55,14 @@ class Args:
     """ Polyak coefficient when using polyak averaging for target network update"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
-    clip_gradients: int = -1
+    clip_gradients: float = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     tbptt:int = 10
     """Chunck size for Truncated Backpropagation Through Time tbptt"""
     log_every: int = 10
-    """ Logging steps """
-    eval_steps: int = 10
-    """ Evaluate the policy each «eval_steps» steps"""
+    """ Log rollout stats every <log_every> episode """
+    eval_steps: int = 50
+    """ Evaluate the policy each «eval_steps» episode"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
     use_wnb: bool = False

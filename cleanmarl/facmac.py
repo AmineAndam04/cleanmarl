@@ -37,7 +37,7 @@ class Args:
     """ Hidden dimension of actor network"""
     actor_num_layers: int = 1
     """ Number of hidden layers of actor network"""
-    critic_hidden_dim: int = 128
+    critic_hidden_dim: int = 64
     """ Hidden dimension of critic network"""
     critic_num_layers: int = 1
     """ Number of hidden layers of critic network"""
@@ -45,11 +45,11 @@ class Args:
     """ Hidden dimension of hyper-network"""
     train_freq: int = 1
     """ Train the network each «train_freq» step in the environment"""
-    optimizer: str = "AdamW"
+    optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate_actor: float =  0.0005
+    learning_rate_actor: float =  0.0008
     """ Learning rate for the actor"""
-    learning_rate_critic: float =  0.0005
+    learning_rate_critic: float =  0.0008
     """ Learning rate for the critic"""
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
@@ -57,9 +57,7 @@ class Args:
     """ Update the target network each target_network_update_freq» step in the environment"""
     polyak: float = 0.005
     """ Polyak coefficient when using polyak averaging for target network update"""
-    log_every: int = 10
-    """ Logging steps """
-    clip_gradients: int = -1
+    clip_gradients: float = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     start_e: float = 0.5
     """ The starting value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
@@ -67,6 +65,8 @@ class Args:
     """ The end value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
     exploration_fraction: float = 750
     """ The number of training steps it takes from to go from start_e to  end_e"""
+    log_every: int = 10
+    """ Logging steps """
     eval_steps: int = 50
     """ Evaluate the policy each «eval_steps» steps"""
     num_eval_ep: int = 5
@@ -263,6 +263,7 @@ if __name__ == "__main__":
         output_dim=env.get_action_size())
     target_actor =  copy.deepcopy(actor)
 
+    print(env.get_obs_size() + env.get_action_size())
     critic = Qnetwrok(input_dim=env.get_obs_size() + env.get_action_size(),
                                           hidden_dim=args.critic_hidden_dim,
                                           num_layer=args.critic_num_layers)

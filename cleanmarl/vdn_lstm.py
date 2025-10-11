@@ -27,7 +27,7 @@ class Args:
     """ The size of the replay buffer"""
     seq_length: int = 10
     """ Length of the sequence to store in the buffer"""
-    burn_in: int = 7
+    burn_in: int = 8
     """Sequences to burn during batch updates"""
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
@@ -35,11 +35,11 @@ class Args:
     """ Discount factor"""
     learning_starts: int = 5000 
     """ Number of env steps to initialize the replay buffer"""
-    train_freq: int = 5
+    train_freq: int = 10
     """ Train the network each «train_freq» step in the environment. The used value is train_freq*num_envs"""
-    optimizer: str = "Adam"
+    optimizer: str = "AdamW"
     """ The optimizer"""
-    learning_rate: float =  0.0007
+    learning_rate: float =  0.0008
     """ Learning rate"""
     batch_size: int = 32
     """Batch size"""
@@ -47,9 +47,9 @@ class Args:
     """ The starting value of epsilon, for exploration"""
     end_e: float = 0.05
     """ The end value of epsilon, for exploration"""
-    exploration_fraction: float = 0.01
+    exploration_fraction: float = 0.05
     """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
-    hidden_dim: int = 64
+    hidden_dim: int = 32
     """ Hidden dimension"""
     num_layers: int = 1
     """ Number of layers"""
@@ -61,7 +61,7 @@ class Args:
     """ Update the target network each target_network_update_freq» step in the environment"""
     log_every: int = 10
     """ Logging steps"""
-    clip_gradients: int = 1
+    clip_gradients: float = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     eval_steps: int = 10000
     """ Evaluate the policy each eval_steps steps. The used value is eval_steps*num_envs"""
@@ -369,7 +369,7 @@ if __name__ == "__main__":
             writer.add_scalar("eval/std_ep_reward",np.std(eval_ep_reward), step)
             writer.add_scalar("eval/ep_length",np.mean(eval_ep_length), step)
             if args.env_type == 'smaclite':
-                writer.add_scalar("eval/battle_won",np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])), step)
+                writer.add_scalar("eval/battle_won",np.mean([info["battle_won"] for info in eval_ep_stats]), step)
                 
 
     writer.close()

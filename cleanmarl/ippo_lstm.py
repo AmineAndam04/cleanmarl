@@ -60,7 +60,7 @@ class Args:
     """ Entropy coefficient """
     epochs: int = 3
     """ Number of training epochs"""
-    clip_gradients: int = -1
+    clip_gradients: float= -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     tbptt:int = 5
     """Chunck size for Truncated Backpropagation Through Time tbptt"""
@@ -304,6 +304,9 @@ if __name__ == "__main__":
             ep_stats   = []
         ## Collate episodes in buffer into single batch
         b_obs,b_actions,b_log_probs,b_reward,b_states,b_avail_actions,b_done,b_mask = rb.get_batch()
+        # Compute the advantage
+        #####  Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
+        #####  Compute the advantage using A(s,a) = λ-Returns -V(s), see page 47 in David Silver's lecture n 4 (https://davidstarsilver.wordpress.com/wp-content/uploads/2025/04/lecture-4-model-free-prediction-.pdf)
         return_lambda = torch.zeros_like(b_actions).float()
         advantages = torch.zeros_like(b_actions).float()
         with torch.no_grad():

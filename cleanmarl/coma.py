@@ -68,7 +68,7 @@ class Args:
     """ The end value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
     exploration_fraction: float = 750
     """ The number of training steps it takes from to go from start_e to  end_e"""
-    clip_gradients: int = -1
+    clip_gradients: float = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     log_every: int = 10
     """ Log rollout stats every log_every episode"""
@@ -454,7 +454,6 @@ if __name__ == "__main__":
         writer.add_scalar("train/entropy", entropies, step)
         writer.add_scalar("train/actor_gradients", actor_gradients , step)
         writer.add_scalar("train/critic_gradients", critic_gradients, step)
-        writer.add_scalar("train/epsilon", epsilon, step)
         writer.add_scalar("train/num_updates", training_step, step)
 
         if training_step % args.eval_steps == 0:
