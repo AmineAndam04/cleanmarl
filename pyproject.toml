@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools >= 77.0.3"]
+requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 
@@ -12,16 +12,6 @@ authors = [
 description = "Single file implementations of Deep Multi-Agent Reinforcement Learning algorithms"
 readme = "README.md"
 requires-python = ">=3.9"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
-]
-license = "MIT"
-license-files = ["LICEN[CS]E*"]
-
-[project.urls]
-Homepage = "https://cleanmarl-docs.readthedocs.io/en/latest/"
-
 dependencies = [
     "tensorboard>=2.12.1",
     "wandb==0.21.1",
@@ -32,3 +22,15 @@ dependencies = [
     "numpy==1.26.4",
     "lbforaging==2.0.0",
 ]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICENSE*"]
+
+[project.urls]
+Homepage = "https://cleanmarl-docs.readthedocs.io/en/latest/"
+
+[tool.setuptools.packages.find]
+include = ["cleanmarl*"]
