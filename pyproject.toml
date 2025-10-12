@@ -16,10 +16,11 @@ dependencies = [
     "tensorboard>=2.12.1",
     "wandb==0.21.1",
     "gym==0.23.1",
-    "gymnasium==0.29.1",
+    "gymnasium>=0.29.1",
     "torch==2.4.1",
     "tyro==0.9.19",
     "numpy==1.26.4",
+    "pettingzoo==1.25.0",
     "lbforaging==2.0.0",
 ]
 classifiers = [
