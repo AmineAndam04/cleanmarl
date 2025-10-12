@@ -13,6 +13,7 @@
 
 We provide more details in our [documentation](https://cleanmarl-docs.readthedocs.io/en/latest/).
 
+You can find runs in Weights & Biases: [Weights & Biases](https://api.wandb.ai/links/andamamine-cleanmarl/b6a74ca6)
 ## Quick Start
 
 Prerequisites:
