@@ -48,3 +48,10 @@ python  cleanmarl/mappo.py --env_type="smaclite" --env_name="3m"
 | [Independent Proximal Policy Optimization (IPPO)](https://arxiv.org/abs/2011.09533) | [`ippo.py`](https://github.com/AmineAndam04/cleanmarl/blob/main/cleanmarl/ippo.py) <br> [`ippo_lstm.py`](https://github.com/AmineAndam04/cleanmarl/blob/main/cleanmarl/ippo_lstm.py) <br> [`ippo_multienvs.py`](https://github.com/AmineAndam04/cleanmarl/blob/main/cleanmarl/ippo_multienvs.py) <br> [`ippo_lstm_multienvs.py`](https://github.com/AmineAndam04/cleanmarl/blob/main/cleanmarl/ippo_lstm_multienvs.py) |
 |  [Multi-Agent Proximal Policy Optimization (MAPPO)](https://arxiv.org/abs/2103.01955) | [`mappo.py`](https://github.com/AmineAndam04/cleanmarl/blob/main/cleanmarl/mappo.py) <br> [`mappo_lstm.py`](https://github.com/AmineAndam04/cleanmarl/blob/main/cleanmarl/mappo_lstm.py) <br> [`mappo_multienvs.py`](https://github.com/AmineAndam04/cleanmarl/blob/main/cleanmarl/mappo_multienvs.py) <br> [`mappo_lstm_multienvs.py`](https://github.com/AmineAndam04/cleanmarl/blob/main/cleanmarl/mappo_lstm_multienvs.py) |
 
+
+
+## To do next:
+
+* Support GPU and MPS training
+* Save the weights 
+
