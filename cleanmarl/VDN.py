@@ -99,12 +99,13 @@ class Qnetwrok(nn.Module):
             x = x.masked_fill(~avail_action, float('-inf'))
         return x
 class ReplayBuffer:
-    def __init__(self,buffer_size,num_agents,obs_space,action_space,normalize_reward = False):
+    def __init__(self,buffer_size,num_agents,obs_space,action_space,normalize_reward = False,device="cpu"):
         self.buffer_size = buffer_size
         self.num_agents = num_agents
         self.obs_space = obs_space
         self.action_space = action_space
         self.normalize_reward = normalize_reward
+        self.device = device
 
         self.obs = np.zeros((self.buffer_size,self.num_agents,self.obs_space))
         self.action = np.zeros((self.buffer_size,self.num_agents))
@@ -132,12 +133,12 @@ class ReplayBuffer:
         else :
             rewards  = self.reward[indices]
         return (
-            torch.from_numpy(self.obs[indices]).float(),
-            torch.from_numpy(self.action[indices]).long(),
-            torch.from_numpy(rewards).float(),
-            torch.from_numpy(self.next_obs[indices]).float(),
-            torch.from_numpy(self.next_avail_action[indices]).bool(),
-            torch.from_numpy(self.done[indices]).float()
+            torch.from_numpy(self.obs[indices]).float().to(self.device),
+            torch.from_numpy(self.action[indices]).long().to(self.device),
+            torch.from_numpy(rewards).float().to(self.device),
+            torch.from_numpy(self.next_obs[indices]).float().to(self.device),
+            torch.from_numpy(self.next_avail_action[indices]).bool().to(self.device),
+            torch.from_numpy(self.done[indices]).float().to(self.device)
         )
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
@@ -169,6 +170,7 @@ if __name__ == "__main__":
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    device = torch.device(args.device)
     # Import the environment 
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
     env = environment(env_type= args.env_type,
@@ -186,8 +188,8 @@ if __name__ == "__main__":
     utility_network = Qnetwrok(input_dim=env.get_obs_size(),
                                           hidden_dim=args.hidden_dim,
                                           num_layer=args.num_layers,
-                                          output_dim=env.get_action_size())
-    target_network = copy.deepcopy(utility_network)
+                                          output_dim=env.get_action_size()).to(device)
+    target_network = copy.deepcopy(utility_network).to(device)
 
     # Initialize the optimizer
     optimizer = getattr(optim, args.optimizer) 
@@ -199,7 +201,8 @@ if __name__ == "__main__":
         obs_space= env.get_obs_size(),
         action_space=env.get_action_size(),
         num_agents= env.n_agents,
-        normalize_reward= args.normalize_reward
+        normalize_reward= args.normalize_reward,
+        device=device
     )
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
@@ -219,7 +222,7 @@ if __name__ == "__main__":
     )
     
     obs,_ = env.reset()
-    avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
+    avail_action = env.get_avail_actions()
     ep_rewards = []
     ep_lengths = []
     ep_stats = []
@@ -233,11 +236,12 @@ if __name__ == "__main__":
             actions = env.sample()
         else:
             with torch.no_grad():
-                q_values = utility_network(x=torch.from_numpy(obs).float(),avail_action =avail_action)
-            actions  = torch.argmax(q_values,dim=-1)
+                q_values = utility_network(x=torch.from_numpy(obs).float().to(device),
+                                           avail_action =torch.from_numpy(avail_action).bool().to(device))
+            actions  = torch.argmax(q_values,dim=-1).cpu()
 
         next_obs, reward, done, truncated, infos = env.step(actions)
-        next_avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool) # We need the next_avail_action to compute the target loss : max of Q(next_state)
+        next_avail_action = env.get_avail_actions() # We need the next_avail_action to compute the target loss : max of Q(next_state)
         
         ep_reward += reward
         ep_length += 1
@@ -247,7 +251,7 @@ if __name__ == "__main__":
         avail_action = next_avail_action 
         if done or truncated:
             obs, _ = env.reset()
-            avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
+            avail_action = env.get_avail_actions()
             ep_rewards.append(ep_reward)
             ep_lengths.append(ep_length)
             if args.env_type == 'smaclite':
@@ -305,9 +309,8 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
-                q_values = utility_network(eval_obs, avail_action = mask_eval)
+                q_values = utility_network(x=torch.from_numpy(eval_obs).float().to(device),
+                                            avail_action = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool).to(device))
                 actions  = torch.argmax(q_values,dim=-1)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions.cpu())
                 current_reward += reward

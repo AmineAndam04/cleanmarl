@@ -121,18 +121,20 @@ class MixingNetwork(nn.Module):
         Q_tot = torch.bmm(Q, W2) + b2
         return Q_tot
 class ReplayBuffer:
-    def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False):
+    def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False,device='cpu'):
         self.buffer_size = buffer_size
         self.num_agents = num_agents
         self.obs_space = obs_space
         self.state_space = state_space
         self.action_space = action_space
         self.normalize_reward = normalize_reward
-
+        self.device = device
         self.episodes = [None] * buffer_size
         self.pos = 0
         self.size = 0
     def store(self,episode):
+        for key, values in episode.items():
+            episode[key] = torch.from_numpy(np.stack(values)).float().to(self.device)   
         self.episodes[self.pos] = episode #(obs,action,reward,done,next_obs,mask)
         self.pos = (self.pos + 1) % self.buffer_size
         self.size = min(self.size + 1, self.buffer_size)
@@ -141,26 +143,26 @@ class ReplayBuffer:
         batch = [self.episodes[i] for i in indices]
         lengths = [len(episode["obs"]) for episode in batch ]
         max_length = max(lengths)
-        obs = np.zeros((batch_size,max_length,self.num_agents,self.obs_space))
-        avail_actions = np.zeros((batch_size,max_length,self.num_agents,self.action_space))
-        actions = np.zeros((batch_size,max_length,self.num_agents))
-        reward = np.zeros((batch_size,max_length))
-        next_obs = np.zeros((batch_size,max_length,self.num_agents,self.obs_space))
-        states = np.zeros((batch_size,max_length,self.state_space))
-        next_states = np.zeros((batch_size,max_length,self.state_space))
-        done = np.zeros((batch_size,max_length))
-        mask = torch.zeros(batch_size, max_length,dtype=torch.bool)
+        obs = torch.zeros((batch_size,max_length,self.num_agents,self.obs_space)).to(self.device)
+        avail_actions = torch.zeros((batch_size,max_length,self.num_agents,self.action_space)).to(self.device)
+        actions = torch.zeros((batch_size,max_length,self.num_agents)).to(self.device)
+        reward = torch.zeros((batch_size,max_length)).to(self.device)
+        next_obs = torch.zeros((batch_size,max_length,self.num_agents,self.obs_space)).to(self.device)
+        states = torch.zeros((batch_size,max_length,self.state_space)).to(self.device)
+        next_states = torch.zeros((batch_size,max_length,self.state_space)).to(self.device)
+        done = torch.zeros((batch_size,max_length)).to(self.device)
+        mask = torch.zeros(batch_size, max_length,dtype=torch.bool).to(self.device)
 
         for i in range(batch_size):
             length = lengths[i]
-            obs[i,:length] =np.stack(batch[i]["obs"])
-            avail_actions[i,:length] =np.stack(batch[i]["avail_actions"])
-            actions[i,:length] =np.stack(batch[i]["actions"])
-            reward[i,:length] =np.stack(batch[i]["reward"])
-            next_obs[i,:length] =np.stack(batch[i]["next_obs"])
-            states[i,:length] =np.stack(batch[i]["states"])
-            next_states[i,:length] =np.stack(batch[i]["next_states"])
-            done[i,:length] =np.stack(batch[i]["done"])
+            obs[i,:length] =batch[i]["obs"]
+            avail_actions[i,:length] =batch[i]["avail_actions"]
+            actions[i,:length] =batch[i]["actions"]
+            reward[i,:length] =batch[i]["reward"]
+            next_obs[i,:length] =batch[i]["next_obs"]
+            states[i,:length] =batch[i]["states"]
+            next_states[i,:length] =batch[i]["next_states"]
+            done[i,:length] =batch[i]["done"]
             mask[i,:length] = 1
 
         if self.normalize_reward:
@@ -169,14 +171,14 @@ class ReplayBuffer:
             reward[mask.bool()] = (reward[mask] - mu) /(std + 1e-6)
         
         return (
-            torch.from_numpy(obs).float(),
-            torch.from_numpy(actions).long(),
-            torch.from_numpy(reward).float(),
-            torch.from_numpy(next_obs).float(),
-            torch.from_numpy(states).float(),
-            torch.from_numpy(next_states).float(),
-            torch.from_numpy(avail_actions).bool(),
-            torch.from_numpy(done).float(),
+            obs.float(),
+            actions.long(),
+            reward.float(),
+            next_obs.float(),
+            states.float(),
+            next_states.float(),
+            avail_actions.bool(),
+            done.float(),
             mask,
         )
 
@@ -207,6 +209,7 @@ if __name__ == "__main__":
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    device = torch.device(args.device)
     ## import the environment 
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
     env = environment(env_type= args.env_type,
@@ -222,13 +225,12 @@ if __name__ == "__main__":
     ## initialize the utility and target networks
     utility_network = Qnetwrok(input_dim=env.get_obs_size(),
                                           hidden_dim=args.hidden_dim,
-                                          output_dim=env.get_action_size())
-    target_network = copy.deepcopy(utility_network)
+                                          output_dim=env.get_action_size()).to(device)
+    target_network = copy.deepcopy(utility_network).to(device)
     mixer = MixingNetwork(n_agents=env.n_agents,
                                     s_dim=env.get_state_size(),
-                                    hidden_dim=args.hyper_dim,
-                                   )
-    target_mixer = copy.deepcopy(mixer)
+                                    hidden_dim=args.hyper_dim).to(device)
+    target_mixer = copy.deepcopy(mixer).to(device)
     
     ## initialize the optimizer
     optimizer = getattr(optim, args.optimizer) 
@@ -242,7 +244,8 @@ if __name__ == "__main__":
         state_space=env.get_state_size(),
         action_space=env.get_action_size(),
         num_agents= env.n_agents,
-        normalize_reward= args.normalize_reward
+        normalize_reward= args.normalize_reward,
+        device=device
     )
     
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -270,7 +273,7 @@ if __name__ == "__main__":
     while step < args.total_timesteps:
         episode = {"obs": [],"actions":[],"reward":[],"next_obs":[],"states":[], "next_states":[],"done":[],"avail_actions":[]}
         obs, _ = env.reset()
-        avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
+        avail_action = env.get_avail_actions()
         state = env.get_state()
         ep_reward, ep_length = 0,0
         done, truncated = False, False
@@ -278,14 +281,14 @@ if __name__ == "__main__":
         while not done and not truncated:
             epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step)
             with torch.no_grad():
-                q_values,h = utility_network(torch.from_numpy(obs).float(),
-                                             h=h,avail_action =avail_action)
+                q_values,h = utility_network(torch.from_numpy(obs).float().to(device),
+                                             h=h,avail_action =torch.from_numpy(avail_action).bool().to(device))
             if random.random() < epsilon:
                 actions = env.sample()
             else:
-                actions  = torch.argmax(q_values,dim=-1)
+                actions  = torch.argmax(q_values,dim=-1).cpu()
             next_obs, reward, done, truncated, infos = env.step(actions)
-            avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool) # Get the mask of 'next_obs' and store it in the replay, we need it for the bellman loss
+            avail_action = env.get_avail_actions()# Get the mask of 'next_obs' and store it in the replay, we need it for the bellman loss
             next_state = env.get_state()
             
             ep_reward += reward
@@ -397,10 +400,11 @@ if __name__ == "__main__":
             current_ep_length = 0
             h_eval = None
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
-                q_values,h_eval = utility_network(eval_obs,h=h_eval, avail_action = mask_eval)
+                q_values,h_eval = utility_network(torch.from_numpy(eval_obs).float().to(device),
+                                                  h=h_eval, 
+                                                  avail_action = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool).to(device))
                 actions  = torch.argmax(q_values,dim=-1)
+                print("actions.device",actions.device)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
                 current_reward += reward
                 current_ep_length += 1

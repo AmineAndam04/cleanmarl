@@ -74,7 +74,7 @@ class Args:
     """ Weights & Biases project name"""
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
-    device: str ="mps"
+    device: str ="cpu"
     """ Device (cpu, gpu, mps)"""
     seed: int  = 1
     """ Random seed"""
@@ -101,14 +101,14 @@ class Qnetwrok(nn.Module):
             x = x.masked_fill(~avail_action, float('-inf'))
         return x
 class ReplayBuffer:
-    def __init__(self,buffer_size,num_agents,obs_space,action_space,num_envs,normalize_reward= False):
+    def __init__(self,buffer_size,num_agents,obs_space,action_space,num_envs,normalize_reward= False,device="cpu"):
         self.buffer_size = buffer_size
         self.num_agents = num_agents
         self.obs_space = obs_space
         self.action_space = action_space
         self.num_envs = num_envs
         self.normalize_reward = normalize_reward
-
+        self.device = device
         self.obs = np.zeros((self.buffer_size,self.num_envs,self.num_agents,self.obs_space))
         self.action = np.zeros((self.buffer_size,self.num_envs,self.num_agents))
         self.reward = np.zeros((self.buffer_size,self.num_envs))
@@ -135,12 +135,12 @@ class ReplayBuffer:
         else :
             rewards  = self.reward[indices]
         return (
-            torch.from_numpy(self.obs[indices]).reshape(batch_size*self.num_envs,self.num_agents,self.obs_space).float(),
-            torch.from_numpy(self.action[indices]).reshape(batch_size*self.num_envs,self.num_agents).long(),
-            torch.from_numpy(rewards).reshape(batch_size*self.num_envs).float(),
-            torch.from_numpy(self.next_obs[indices]).reshape(batch_size*self.num_envs,self.num_agents,self.obs_space).float(),
-            torch.from_numpy(self.next_avail_action[indices]).reshape(batch_size*self.num_envs,self.num_agents,self.action_space).bool(),
-            torch.from_numpy(self.done[indices]).reshape(batch_size*self.num_envs).float()
+            torch.from_numpy(self.obs[indices]).reshape(batch_size*self.num_envs,self.num_agents,self.obs_space).float().to(self.device),
+            torch.from_numpy(self.action[indices]).reshape(batch_size*self.num_envs,self.num_agents).long().to(self.device),
+            torch.from_numpy(rewards).reshape(batch_size*self.num_envs).float().to(self.device),
+            torch.from_numpy(self.next_obs[indices]).reshape(batch_size*self.num_envs,self.num_agents,self.obs_space).float().to(self.device),
+            torch.from_numpy(self.next_avail_action[indices]).reshape(batch_size*self.num_envs,self.num_agents,self.action_space).bool().to(self.device),
+            torch.from_numpy(self.done[indices]).reshape(batch_size*self.num_envs).float().to(self.device)
         )
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
@@ -227,6 +227,7 @@ if __name__ == "__main__":
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    device = torch.device(args.device)
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
     ## Create the pipes to communicate between the main process (VDN algorithm) and child processes (envs)
     conns = [Pipe() for _ in range(args.num_envs)]
@@ -254,8 +255,8 @@ if __name__ == "__main__":
     utility_network = Qnetwrok(input_dim=eval_env.get_obs_size(),
                                           hidden_dim=args.hidden_dim,
                                           num_layer=args.num_layers,
-                                          output_dim=eval_env.get_action_size())
-    target_network = copy.deepcopy(utility_network)
+                                          output_dim=eval_env.get_action_size()).to(device)
+    target_network = copy.deepcopy(utility_network).to(device)
 
     # Initialize the optimizer
     optimizer = getattr(optim, args.optimizer) 
@@ -268,7 +269,8 @@ if __name__ == "__main__":
         action_space=eval_env.get_action_size(),
         num_agents= eval_env.n_agents,
         num_envs = args.num_envs,
-        normalize_reward= args.normalize_reward
+        normalize_reward= args.normalize_reward,
+        device=device
     )
 
     
@@ -314,11 +316,10 @@ if __name__ == "__main__":
             contents = [vdn_conn.recv() for vdn_conn in vdn_conns]
             actions = np.array([content["actions"] for content in contents])
         else:
-            obs = torch.from_numpy(obs).float()
-            avail_action = torch.tensor(avail_action, dtype=torch.bool)
             with torch.no_grad():
-                 q_values = utility_network(x=obs,avail_action =avail_action)
-            actions  = torch.argmax(q_values,dim=-1)
+                 q_values = utility_network(x=torch.from_numpy(obs).float().to(device),
+                                            avail_action =torch.tensor(avail_action, dtype=torch.bool).to(device))
+            actions  = torch.argmax(q_values,dim=-1).cpu()
         # Execute the action
         for i,vdn_conn in enumerate(vdn_conns):
                 vdn_conn.send(("step",actions[i]))
@@ -401,9 +402,8 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
-                q_values = utility_network(eval_obs, avail_action = mask_eval)
+                q_values = utility_network(torch.from_numpy(eval_obs).float().to(device), 
+                                           avail_action = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool).to(device))
                 actions  = torch.argmax(q_values,dim=-1)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions.cpu())
                 current_reward += reward
