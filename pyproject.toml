@@ -22,6 +22,7 @@ dependencies = [
     "numpy==1.26.4",
     "pettingzoo==1.25.0",
     "lbforaging==2.0.0",
+    "smaclite @ git+https://github.com/uoe-agents/smaclite",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
