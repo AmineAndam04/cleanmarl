@@ -72,7 +72,7 @@ class Args:
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
     device: str ="cpu"
-    """ Device (cpu, gpu, mps)"""
+    """ Device (cpu, cuda, mps)"""
     seed: int  = 1
     """ Random seed"""
     
@@ -229,6 +229,7 @@ if __name__ == "__main__":
     ep_reward = 0
     ep_length = 0
     num_episodes = 0
+    num_updates = 0
     for step in range(args.total_timesteps):
         ## select actions
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step)
@@ -278,9 +279,10 @@ if __name__ == "__main__":
                 if args.clip_gradients > 0:
                     torch.nn.utils.clip_grad_norm_(utility_network.parameters(), max_norm=args.clip_gradients)
                 optimizer.step()
-                
+                num_updates+=1
                 writer.add_scalar("train/loss", loss.item(), step)
                 writer.add_scalar("train/grads", vdn_gradients, step)
+                writer.add_scalar("train/num_updates", num_updates, step)
                 
             if step % args.target_network_update_freq == 0:
                         soft_update(
@@ -293,6 +295,7 @@ if __name__ == "__main__":
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
             writer.add_scalar("rollout/epsilon",epsilon,step)
+            writer.add_scalar("rollout/num_episodes",num_episodes,step)
             if args.env_type == 'smaclite':
                 writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
             ep_rewards = []

@@ -72,7 +72,7 @@ class Args:
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
     device: str ="cpu"
-    """ Device (cpu, gpu, mps)"""
+    """ Device (cpu, cuda, mps)"""
     seed: int  = 1
     """ Random seed"""
     

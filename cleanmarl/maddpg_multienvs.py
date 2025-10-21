@@ -72,7 +72,7 @@ class Args:
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
     device: str ="cpu"
-    """ Device (cpu, gpu, mps)"""
+    """ Device (cpu, cuda, mps)"""
     seed: int  = 1
     """ Random seed"""
 
@@ -122,7 +122,7 @@ class Critic(nn.Module):
             x = layer(x)
         return x.squeeze()
     def maddpg_inputs(self,state ,actions,grad_processing,batch_action):
-        maddpg_inputs = torch.zeros((state.size(0),self.num_agents,self.input_dim))
+        maddpg_inputs = torch.zeros((state.size(0),self.num_agents,self.input_dim)).to(state.device)
         maddpg_inputs[:,:,:state.size(-1)] = state.unsqueeze(1)
         oh= actions.unsqueeze(1)
         oh = oh.expand(-1,self.num_agents,-1,-1)
@@ -131,26 +131,27 @@ class Critic(nn.Module):
             b_oh= batch_action.unsqueeze(1)
             b_oh = b_oh.expand(-1,self.num_agents,-1,-1)
             b_oh = b_oh.reshape(state.size(0),self.num_agents,-1)
-            mask = torch.eye(self.num_agents)
+            mask = torch.eye(self.num_agents).to(state.device)
             mask = mask.unsqueeze(-1).expand(-1,-1,actions.size(-1))
             mask = mask.reshape(self.num_agents,-1)
             oh = torch.where(mask.bool(),oh, b_oh)
         maddpg_inputs[:,:,state.size(-1):] = oh
         return maddpg_inputs
-
 class ReplayBuffer:
-    def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False):
+    def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False,device='cpu'):
         self.buffer_size = buffer_size
         self.num_agents = num_agents
         self.obs_space = obs_space
         self.state_space = state_space
         self.action_space = action_space
         self.normalize_reward = normalize_reward
-
+        self.device  = device
         self.episodes = [None] * buffer_size
         self.pos = 0
         self.size = 0
     def store(self,episode):
+        for key, values in episode.items():
+            episode[key] = torch.from_numpy(np.stack(values)).float().to(self.device) 
         self.episodes[self.pos] = episode #{"obs": [],"actions":[],"reward":[],"states":[],"done":[],"avail_actions":[]}
         self.pos = (self.pos + 1) % self.buffer_size
         self.size = min(self.size + 1, self.buffer_size)
@@ -158,40 +159,40 @@ class ReplayBuffer:
         indices = np.random.randint(0, self.size, size=batch_size)
         batch = [self.episodes[i] for i in indices]
         lengths = [len(episode["obs"]) for episode in batch ]
-        # print(lengths)
         max_length = max(lengths)
-        obs = np.zeros((batch_size,max_length,self.num_agents,self.obs_space))
-        avail_actions = np.zeros((batch_size,max_length,self.num_agents,self.action_space))
-        actions = np.zeros((batch_size,max_length,self.num_agents,self.action_space))
-        reward = np.zeros((batch_size,max_length))
-        states = np.zeros((batch_size,max_length,self.state_space))
-        done = np.ones((batch_size,max_length))
-        mask = torch.zeros(batch_size, max_length,dtype=torch.bool)
+        obs = torch.zeros((batch_size,max_length,self.num_agents,self.obs_space)).to(self.device)
+        avail_actions = torch.zeros((batch_size,max_length,self.num_agents,self.action_space)).to(self.device)
+        actions = torch.zeros((batch_size,max_length,self.num_agents,self.action_space)).to(self.device)
+        reward = torch.zeros((batch_size,max_length)).to(self.device)
+        states = torch.zeros((batch_size,max_length,self.state_space)).to(self.device)
+        done = torch.ones((batch_size,max_length)).to(self.device)
+        mask = torch.zeros(batch_size, max_length,dtype=torch.bool).to(self.device)
 
         for i in range(batch_size):
             length = lengths[i]
-            obs[i,:length] =np.stack(batch[i]["obs"])
-            avail_actions[i,:length] =np.stack(batch[i]["avail_actions"])
-            actions[i,:length] =np.stack(batch[i]["actions"])
-            reward[i,:length] =np.stack(batch[i]["reward"])
-            states[i,:length] =np.stack(batch[i]["states"])
-            done[i,:length] =np.stack(batch[i]["done"])
+            obs[i,:length] =batch[i]["obs"]
+            avail_actions[i,:length] =batch[i]["avail_actions"]
+            actions[i,:length] =batch[i]["actions"]
+            reward[i,:length] =batch[i]["reward"]
+            states[i,:length] =batch[i]["states"]
+            done[i,:length] =batch[i]["done"]
             mask[i,:length] = 1
 
         if self.normalize_reward:
-            mu = np.mean(reward[mask] )
-            std = np.std(reward[mask] )
+            mu = torch.mean(reward[mask] )
+            std = torch.std(reward[mask] )
             reward[mask.bool()] = (reward[mask] - mu) /(std + 1e-6)
         
         return (
-            torch.from_numpy(obs).float(),
-            torch.from_numpy(actions).float(),
-            torch.from_numpy(reward).float(),
-            torch.from_numpy(states).float(),
-            torch.from_numpy(avail_actions).bool(),
-            torch.from_numpy(done).float(),
+            obs.float(),
+            actions.float(),
+            reward.float(),
+            states.float(),
+            avail_actions.bool(),
+            done.float(),
             mask,
         )
+
 
 
 
@@ -283,6 +284,7 @@ if __name__ == "__main__":
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    device = torch.device(args.device)
     ## import the environment 
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
     ## Create the pipes to communicate between the main process (maddpg algorithm) and child processes (envs)
@@ -310,9 +312,8 @@ if __name__ == "__main__":
         input_dim=eval_env.get_obs_size(),
         hidden_dim=args.actor_hidden_dim,
         num_layer=args.actor_num_layers,
-        output_dim=eval_env.get_action_size()
-    )
-    target_actor = copy.deepcopy(actor)
+        output_dim=eval_env.get_action_size()).to(device)
+    target_actor = copy.deepcopy(actor).to(device)
 
     maddpg_input_dim = eval_env.get_state_size() +  eval_env.n_agents*eval_env.get_action_size()
     critic = Critic(
@@ -320,9 +321,8 @@ if __name__ == "__main__":
         hidden_dim=args.critic_hidden_dim,
         num_layer=args.critic_num_layers,
         output_dim=eval_env.get_action_size(),
-        num_agents =  eval_env.n_agents
-    )
-    target_critic = copy.deepcopy(critic)
+        num_agents =  eval_env.n_agents).to(device)
+    target_critic = copy.deepcopy(critic).to(device)
 
     Optimizer = getattr(optim, args.optimizer) 
     actor_optimizer = Optimizer(actor.parameters(),lr = args.learning_rate_actor)
@@ -350,8 +350,8 @@ if __name__ == "__main__":
         state_space=eval_env.get_state_size(),
         action_space=eval_env.get_action_size(),
         num_agents= eval_env.n_agents,
-        normalize_reward= args.normalize_reward
-    )
+        normalize_reward= args.normalize_reward,
+        device=device)
     ep_rewards = []
     ep_lengths = []
     ep_stats = []
@@ -372,11 +372,10 @@ if __name__ == "__main__":
         alive_envs = list(range(args.num_envs))      
         ep_reward, ep_length,ep_stat = [0]* args.num_envs,[0]* args.num_envs,[0]* args.num_envs
         while len(alive_envs) > 0:
-            obs = torch.from_numpy(obs).float()
-            avail_action = torch.tensor(avail_action, dtype=torch.bool)
-            state = torch.from_numpy(state).float()
             with torch.no_grad():
-                actions = actor.act(obs,avail_action =avail_action,hard=True) ## These are one hot-vectors
+                actions = actor.act(torch.from_numpy(obs).float().to(device),
+                                    avail_action =torch.from_numpy(avail_action).bool().to(device),
+                                    hard=True).cpu() ## These are one hot-vectors
                 actions_to_take = torch.argmax(actions,dim=-1)
             for i,j in enumerate(alive_envs):
                 maddpg_conns[j].send(("step",actions_to_take[i]))
@@ -508,9 +507,8 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
-                logits = actor.logits(eval_obs, avail_action = mask_eval)
+                logits = actor.logits(torch.from_numpy(eval_obs).float().to(device), 
+                                      avail_action = torch.tensor(eval_env.get_avail_actions()).bool().to(device))
                 eval_actions  = torch.argmax(logits,dim=-1)
                 next_obs_, reward, done, truncated, infos = eval_env.step(eval_actions)
                 current_reward += reward

@@ -83,7 +83,7 @@ class Args:
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
     device: str ="cpu"
-    """ Device (cpu, gpu, mps)"""
+    """ Device (cpu, cuda, mps)"""
     seed: int  = 1
     """ Random seed"""
 
@@ -95,44 +95,46 @@ class  RolloutBuffer():
         self.state_space = state_space
         self.action_space = action_space
         self.normalize_reward = normalize_reward
+        self.device = device
         self.episodes = [None] * buffer_size
         self.pos = 0
-        self.device = device
     def add(self,episode):
+        for key, values in episode.items():
+            episode[key] = torch.from_numpy(np.stack(values)).float().to(self.device)  
         self.episodes[self.pos] = episode 
         self.pos += 1
     def get_batch(self):
         self.pos = 0
         lengths = [len(episode["obs"]) for episode in self.episodes ]
         max_length = max(lengths)
-        obs = np.zeros((self.buffer_size,max_length,self.num_agents,self.obs_space))
-        avail_actions = np.zeros((self.buffer_size,max_length,self.num_agents,self.action_space))
-        actions = np.zeros((self.buffer_size,max_length,self.num_agents))
-        reward = np.zeros((self.buffer_size,max_length))
-        states = np.zeros((self.buffer_size,max_length,self.state_space))
-        done = np.zeros((self.buffer_size,max_length))
-        mask = torch.zeros(self.buffer_size, max_length,dtype=torch.bool)
+        obs = torch.zeros((self.buffer_size,max_length,self.num_agents,self.obs_space)).to(self.device)
+        avail_actions = torch.zeros((self.buffer_size,max_length,self.num_agents,self.action_space)).to(self.device)
+        actions = torch.zeros((self.buffer_size,max_length,self.num_agents)).to(self.device)
+        reward = torch.zeros((self.buffer_size,max_length)).to(self.device)
+        states = torch.zeros((self.buffer_size,max_length,self.state_space)).to(self.device)
+        done = torch.zeros((self.buffer_size,max_length)).to(self.device)
+        mask = torch.zeros(self.buffer_size, max_length,dtype=torch.bool).to(self.device)
         for i in range(self.buffer_size):
             length = lengths[i]
-            obs[i,:length] = np.stack(self.episodes[i]["obs"])
-            avail_actions[i,:length] = np.stack(self.episodes[i]["avail_actions"])
-            actions[i,:length] = np.stack(self.episodes[i]["actions"])
-            reward[i,:length] = np.stack(torch.as_tensor(self.episodes[i]["reward"]))
-            states[i,:length] = np.stack(self.episodes[i]["states"])
-            done[i,:length] = np.stack(self.episodes[i]["done"])
+            obs[i,:length] = self.episodes[i]["obs"]
+            avail_actions[i,:length] = self.episodes[i]["avail_actions"]
+            actions[i,:length] = self.episodes[i]["actions"]
+            reward[i,:length] = self.episodes[i]["reward"]
+            states[i,:length] = self.episodes[i]["states"]
+            done[i,:length] = self.episodes[i]["done"]
             mask[i,:length] = 1
         if self.normalize_reward:
-            mu = np.mean(reward[mask] )
-            std = np.std(reward[mask] )
+            mu = torch.mean(reward[mask] )
+            std = torch.std(reward[mask] )
             reward[mask.bool()] = (reward[mask] - mu) /(std + 1e-6)
         self.episodes = [None] * self.buffer_size
         return (
-            torch.from_numpy(obs).float(),
-            torch.from_numpy(actions).long(),
-            torch.from_numpy(reward).float(),
-            torch.from_numpy(states).float(),
-            torch.from_numpy(avail_actions).bool(),
-            torch.from_numpy(done).float(),
+            obs.float(),
+            actions.long(),
+            reward.float(),
+            states.float(),
+            avail_actions.bool(),
+            done.float(),
             mask,
         )
 class Actor(nn.Module):
@@ -194,7 +196,7 @@ class Critic(nn.Module):
             x = x.masked_fill(~avail_actions, -1e9)
         return x.squeeze()
     def coma_inputs(self,state ,observations,actions):
-        coma_inputs = torch.zeros((state.size(0),self.num_agents,self.input_dim))
+        coma_inputs = torch.zeros((state.size(0),self.num_agents,self.input_dim)).to(state.device)
         coma_inputs[:,:,:state.size(-1)] = state.unsqueeze(1)
         coma_inputs[:,:,state.size(-1):state.size(-1)+observations.size(-1)] = observations
         one_hot = F.one_hot(actions.long(), num_classes=self.output_dim).float() 
@@ -238,6 +240,7 @@ if __name__ == "__main__":
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    device = torch.device(args.device)
     ## import the environment 
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
     env = environment(env_type= args.env_type,
@@ -257,7 +260,7 @@ if __name__ == "__main__":
         hidden_dim=args.actor_hidden_dim,
         num_layer=args.actor_num_layers,
         output_dim=env.get_action_size()
-    )
+    ).to(device)
 
     critic_input_dim = get_coma_critic_input_dim(env)
     critic = Critic(
@@ -265,9 +268,8 @@ if __name__ == "__main__":
         hidden_dim=args.critic_hidden_dim,
         num_layer=args.critic_num_layers,
         output_dim=env.get_action_size(),
-        num_agents =  env.n_agents
-    )
-    target_critic = copy.deepcopy(critic)
+        num_agents =  env.n_agents).to(device)
+    target_critic = copy.deepcopy(critic).to(device)
     Optimizer = getattr(optim, args.optimizer) 
     actor_optimizer = Optimizer(actor.parameters(),lr = args.learning_rate_actor)
     critic_optimizer = Optimizer(critic.parameters(),lr = args.learning_rate_critic)
@@ -281,7 +283,7 @@ if __name__ == "__main__":
                 entity=args.wnb_entity,
                 sync_tensorboard=True,
                 config=vars(args),
-                name=f'COMA-{run_name}'
+                name=f'COMA)-{run_name}'
             )
     writer = SummaryWriter(f"runs/COMA-{run_name}")
     writer.add_text(
@@ -294,7 +296,8 @@ if __name__ == "__main__":
                         state_space=env.get_state_size(),
                         action_space=env.get_action_size(),
                         num_agents= env.n_agents,
-                        normalize_reward= args.normalize_reward)
+                        normalize_reward= args.normalize_reward,
+                        device= device)
     ep_rewards = []
     ep_lengths = []
     ep_stats = []
@@ -309,11 +312,11 @@ if __name__ == "__main__":
             ep_reward, ep_length = 0,0
             done, truncated = False, False
             while not done and not truncated:
-                obs = torch.from_numpy(obs).float()
-                avail_action = torch.tensor(env.get_avail_actions(), dtype=torch.bool)
-                state = torch.from_numpy(env.get_state()).float()
+                avail_action = env.get_avail_actions()
+                state = env.get_state()
                 with torch.no_grad():
-                    actions = actor.act(obs,eps=epsilon,avail_action=avail_action)
+                    actions = actor.act(torch.from_numpy(obs).float().to(device),eps=epsilon,
+                                        avail_action=torch.from_numpy(avail_action).bool().to(device)).cpu()
                 
                 next_obs, reward, done, truncated, infos = env.step(actions)
                 ep_reward += reward
@@ -352,7 +355,7 @@ if __name__ == "__main__":
         b_obs,b_actions,b_reward,b_states,b_avail_actions,b_done,b_mask = rb.get_batch()
         ### 1. Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
         with torch.no_grad():
-            return_lambda = torch.zeros_like(b_actions).float()
+            return_lambda = torch.zeros_like(b_actions).float().to(device)
             if args.use_tdlamda:
                 for ep_idx in range(return_lambda.size(0)):
                     ep_len = b_mask[ep_idx].sum()
@@ -466,10 +469,9 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
                 with torch.no_grad():
-                    actions = actor.act(eval_obs,avail_action=mask_eval)
+                    actions = actor.act(torch.from_numpy(eval_obs).float().to(device),
+                                        avail_action=torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool).to(device))
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
                 current_reward += reward
                 current_ep_length += 1

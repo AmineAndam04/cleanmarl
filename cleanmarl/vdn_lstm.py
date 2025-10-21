@@ -74,7 +74,7 @@ class Args:
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
     device: str ="cpu"
-    """ Device (cpu, gpu, mps)"""
+    """ Device (cpu, cuda, mps)"""
     seed: int  = 1
     """ Random seed"""
 
@@ -237,6 +237,8 @@ if __name__ == "__main__":
     ep_rewards = []
     ep_lengths = []
     ep_stats = []
+    num_updates=0
+    num_episodes = 0
     for step in range(args.total_timesteps):
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step)
         # We always need the forward pass even when taking random actions in order to let the h flow through time
@@ -279,6 +281,7 @@ if __name__ == "__main__":
                 ep_stats.append(infos)
             ep_reward = 0
             ep_length = 0
+            num_episodes+=1
             h = None
             if 0 < current_seq_len and  current_seq_len< args.seq_length:
                 current_seq_len = 0
@@ -323,9 +326,10 @@ if __name__ == "__main__":
                 if args.clip_gradients > 0:
                     torch.nn.utils.clip_grad_norm_(utility_network.parameters(), max_norm=args.clip_gradients)
                 optimizer.step()
-
+                num_updates+= 1
                 writer.add_scalar("train/loss", loss, step)
                 writer.add_scalar("train/grads", vdn_gradients, step)
+                writer.add_scalar("train/num_updates", num_updates, step)
 
             if step % args.target_network_update_freq == 0:
                     soft_update(
@@ -338,6 +342,7 @@ if __name__ == "__main__":
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length",np.mean(ep_lengths),step)
             writer.add_scalar("rollout/epsilon",epsilon,step)
+            writer.add_scalar("rollout/num_episodes",num_episodes,step)
             if args.env_type == 'smaclite':
                 writer.add_scalar("rollout/battle_won",np.mean([info["battle_won"] for info in ep_stats]), step)
             ep_rewards = []

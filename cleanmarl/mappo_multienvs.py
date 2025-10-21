@@ -72,62 +72,64 @@ class Args:
     """ Weights & Biases project name"""
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
+    device: str ="cpu"
+    """ Device (cpu, cuda, mps)"""
     seed: int  = 1
     """ Random seed"""
-    device: str ="cpu"
-    """ Device (cpu, gpu, mps)"""
 
 
 class  RolloutBuffer():
-    def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False):
+    def __init__(self,buffer_size,num_agents,obs_space,state_space,action_space,normalize_reward = False,device="cpu"):
         self.buffer_size = buffer_size
         self.num_agents = num_agents
         self.obs_space = obs_space
         self.state_space = state_space
         self.action_space = action_space
         self.normalize_reward = normalize_reward
+        self.device = device
         self.episodes = [None] * buffer_size
         self.pos = 0
     def add(self,episode):
+        for key, values in episode.items():
+            episode[key] = torch.from_numpy(np.stack(values)).float().to(self.device) 
         self.episodes[self.pos] = episode 
         self.pos += 1
     def get_batch(self):
         self.pos = 0
         lengths = [len(episode["obs"]) for episode in self.episodes ]
         max_length = max(lengths)
-        obs = np.zeros((self.buffer_size,max_length,self.num_agents,self.obs_space))
-        avail_actions = np.zeros((self.buffer_size,max_length,self.num_agents,self.action_space))
-        actions = np.zeros((self.buffer_size,max_length,self.num_agents))
-        log_probs = np.zeros((self.buffer_size,max_length,self.num_agents))
-        reward = np.zeros((self.buffer_size,max_length))
-        states = np.zeros((self.buffer_size,max_length,self.state_space))
-        done = np.zeros((self.buffer_size,max_length))
-        mask = torch.zeros(self.buffer_size, max_length,dtype=torch.bool)
+        obs = torch.zeros((self.buffer_size,max_length,self.num_agents,self.obs_space)).to(self.device)
+        avail_actions = torch.zeros((self.buffer_size,max_length,self.num_agents,self.action_space)).to(self.device)
+        actions = torch.zeros((self.buffer_size,max_length,self.num_agents)).to(self.device)
+        log_probs = torch.zeros((self.buffer_size,max_length,self.num_agents)).to(self.device)
+        reward = torch.zeros((self.buffer_size,max_length)).to(self.device)
+        states = torch.zeros((self.buffer_size,max_length,self.state_space)).to(self.device)
+        done = torch.zeros((self.buffer_size,max_length)).to(self.device)
+        mask = torch.zeros(self.buffer_size, max_length,dtype=torch.bool).to(self.device)
         for i in range(self.buffer_size):
             length = lengths[i]
-            obs[i,:length] = np.stack(self.episodes[i]["obs"])
-            avail_actions[i,:length] = np.stack(self.episodes[i]["avail_actions"])
-            actions[i,:length] = np.stack(self.episodes[i]["actions"])
-            log_probs[i,:length] = np.stack(self.episodes[i]["log_prob"])
-            reward[i,:length] = np.stack(torch.as_tensor(self.episodes[i]["reward"]))
-            states[i,:length] = np.stack(self.episodes[i]["states"])
-            done[i,:length] = np.stack(self.episodes[i]["done"])
+            obs[i,:length] = self.episodes[i]["obs"]
+            avail_actions[i,:length] = self.episodes[i]["avail_actions"]
+            actions[i,:length] = self.episodes[i]["actions"]
+            log_probs[i,:length] = self.episodes[i]["log_prob"]
+            reward[i,:length] = self.episodes[i]["reward"]
+            states[i,:length] = self.episodes[i]["states"]
+            done[i,:length] = self.episodes[i]["done"]
             mask[i,:length] = 1
         if self.normalize_reward:
-            mu = np.mean(reward[mask] )
-            std = np.std(reward[mask] )
+            mu = torch.mean(reward[mask] )
+            std = torch.std(reward[mask] )
             reward[mask.bool()] = (reward[mask] - mu) /(std + 1e-6)
         self.episodes = [None] * self.buffer_size
         return (
-            torch.from_numpy(obs).float(),
-            torch.from_numpy(actions).long(),
-            torch.from_numpy(log_probs).float(),
-            torch.from_numpy(reward).float(),
-            torch.from_numpy(states).float(),
-            torch.from_numpy(avail_actions).bool(),
-            torch.from_numpy(done).float(),
-            mask,
-        )
+            obs.float(),
+            actions.long(),
+            log_probs.float(),
+            reward.float(),
+            states.float(),
+            avail_actions.bool(),
+            done.float(),
+            mask)
 class Actor(nn.Module):
     def __init__(self, input_dim,hidden_dim,num_layer,output_dim) -> None:
         super().__init__()
@@ -139,8 +141,6 @@ class Actor(nn.Module):
                 nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
             )
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
-        
-    
     def act(self,x,avail_action=None):
         logits = self.logits(x,avail_action)
         distribution = Categorical(logits=logits)
@@ -164,7 +164,6 @@ class Critic(nn.Module):
                 nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
             )
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, 1)))
-    
     def forward(self,x):
         for layer in self.layers:
             x = layer(x)
@@ -257,6 +256,7 @@ if __name__ == "__main__":
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    device = torch.device(args.device)
     ## import the environment 
     kwargs = {} #{"render_mode":'human',"shared_reward":False}
     ## Create the pipes to communicate between the main process (COMA algorithm) and child processes (envs)
@@ -285,11 +285,10 @@ if __name__ == "__main__":
         input_dim=eval_env.get_obs_size(),
         hidden_dim=args.actor_hidden_dim,
         num_layer=args.actor_num_layers,
-        output_dim=eval_env.get_action_size()
-    )
+        output_dim=eval_env.get_action_size()).to(device)
     critic = Critic(input_dim=eval_env.get_state_size(),
                     hidden_dim=args.critic_hidden_dim,
-                    num_layer=args.critic_num_layers)
+                    num_layer=args.critic_num_layers).to(device)
     
     Optimizer = getattr(optim, args.optimizer) 
     actor_optimizer = Optimizer(actor.parameters(),lr = args.learning_rate_actor)
@@ -317,7 +316,8 @@ if __name__ == "__main__":
                         state_space=eval_env.get_state_size(),
                         action_space=eval_env.get_action_size(),
                         num_agents= eval_env.n_agents,
-                        normalize_reward= args.normalize_reward)
+                        normalize_reward= args.normalize_reward,
+                        device=device)
     ep_rewards = []
     ep_lengths = []
     ep_stats = []
@@ -338,11 +338,10 @@ if __name__ == "__main__":
         alive_envs = list(range(args.batch_size))      
         ep_reward, ep_length,ep_stat = [0]* args.batch_size,[0]* args.batch_size,[0]* args.batch_size
         while len(alive_envs) > 0:
-            obs = torch.from_numpy(obs).float()
-            avail_action = torch.tensor(avail_action, dtype=torch.bool)
-            state = torch.from_numpy(state).float()
             with torch.no_grad():
-                actions,log_probs = actor.act(obs,avail_action=avail_action)
+                actions,log_probs = actor.act(torch.from_numpy(obs).float().to(device),
+                                              avail_action=torch.from_numpy(avail_action).bool().to(device))
+                actions,log_probs =actions.cpu(),log_probs.cpu() 
             for i,j in enumerate(alive_envs):
                 mappo_conns[j].send(("step",actions[i]))
             contents = [mappo_conns[i].recv() for i in alive_envs]
@@ -363,10 +362,7 @@ if __name__ == "__main__":
                 episodes[j]["avail_actions"].append(avail_action[i])
                 ep_reward[j] += reward[i]
                 ep_length[j] += 1
-            
             step += len(alive_envs)
-
-            
             obs = []
             state = []
             avail_action = []
@@ -406,8 +402,8 @@ if __name__ == "__main__":
         # Compute the advantage
         #####  Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
         #####  Compute the advantage using A(s,a) = λ-Returns -V(s), see page 47 in David Silver's lecture n 4 (https://davidstarsilver.wordpress.com/wp-content/uploads/2025/04/lecture-4-model-free-prediction-.pdf)
-        return_lambda = torch.zeros_like(b_actions).float()
-        advantages = torch.zeros_like(b_actions).float()
+        return_lambda = torch.zeros_like(b_actions).float().to(device)
+        advantages = torch.zeros_like(b_actions).float().to(device)
         with torch.no_grad():
             for ep_idx in range(return_lambda.size(0)):
                 ep_len = b_mask[ep_idx].sum()
@@ -497,7 +493,7 @@ if __name__ == "__main__":
             kl_divergences.append(kl_divergence.item())
             actor_gradients.append(actor_gradient)
             critic_gradients.append(critic_gradient)
-            clipped_ratios.append(clipped_ratio)
+            clipped_ratios.append(clipped_ratio.cpu())
 
         writer.add_scalar("train/critic_loss", np.mean(critic_losses), step)
         writer.add_scalar("train/actor_loss", np.mean(actor_losses), step)
@@ -517,10 +513,9 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                eval_obs = torch.from_numpy(eval_obs).float()
-                mask_eval = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool)
                 with torch.no_grad():
-                    actions,_ = actor.act(eval_obs,avail_action=mask_eval)
+                    actions,_ = actor.act(torch.from_numpy(eval_obs).float().to(device),
+                                          avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device))
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
                 current_reward += reward
                 current_ep_length += 1
