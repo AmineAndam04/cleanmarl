@@ -18,7 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 class Args:
     env_type: str = "smaclite" #"pz"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "3m" #"simple_spread_v3" #"pursuit_v4"
+    env_name: str = "27m_vs_30m" #"simple_spread_v3" #"pursuit_v4"
     """ Name of the environment """
     env_family: str ="mpe"
     """ Env family when using pz"""

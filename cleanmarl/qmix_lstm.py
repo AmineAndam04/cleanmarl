@@ -33,9 +33,9 @@ class Args:
     """ Train the network each «train_freq» step in the environment"""
     optimizer: str = "Adam"
     """ The optimizer"""
-    learning_rate: float =  0.0008
+    learning_rate: float =  0.0005
     """ Learning rate"""
-    batch_size: int = 10
+    batch_size: int = 32
     """ Batch size"""
     start_e: float = 1
     """ The starting value of epsilon, for exploration"""
@@ -404,7 +404,6 @@ if __name__ == "__main__":
                                                   h=h_eval, 
                                                   avail_action = torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool).to(device))
                 actions  = torch.argmax(q_values,dim=-1)
-                print("actions.device",actions.device)
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
                 current_reward += reward
                 current_ep_length += 1

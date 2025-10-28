@@ -1,7 +1,8 @@
-import copy
-import torch
-import torch.nn as nn
-import torch.optim as optim
+from typing import Tuple, Any
+import jax
+import optax
+from flax import nnx
+import jax.numpy as jnp
 import numpy as np
 from dataclasses import dataclass
 import tyro
@@ -9,7 +10,6 @@ import random
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
 from env.lbf import LBFWrapper
-import torch.nn.functional as F
 import datetime
 from torch.utils.tensorboard import SummaryWriter
 
@@ -34,7 +34,7 @@ class Args:
     """ Number of env steps to initialize the replay buffer"""
     train_freq: int = 5
     """ Train the network each «train_freq» step in the environment"""
-    optimizer: str = "Adam"
+    optimizer: str = "adam"
     """ The optimizer"""
     learning_rate: float = 0.0005
     """ Learning rate"""
@@ -70,60 +70,85 @@ class Args:
     """ Weights & Biases project name"""
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
-    device: str = "cpu"
-    """ Device (cpu, cuda, mps)"""
     seed: int = 1
     """ Random seed"""
 
 
-class Qnetwrok(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim) -> None:
+class Qnetwork(nnx.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        num_layer: int,
+        output_dim: int,
+        *,
+        rngs: nnx.Rngs,
+    ):
         super().__init__()
-        self.layers = nn.ModuleList()
-        self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
-        for i in range(num_layer):
+        kernel_init = jax.nn.initializers.orthogonal()
+        self.layers = nnx.List(
+            [
+                nnx.Linear(input_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs),
+                nnx.relu,
+            ]
+        )
+        for _ in range(num_layer):
             self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
+                nnx.Linear(hidden_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
             )
-        self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
+            self.layers.append(nnx.relu)
+        self.layers.append(
+            nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs)
+        )
 
-    def forward(self, x, avail_action=None):
+    def __call__(self, x: jnp.ndarray, avail_action: jnp.ndarray | None = None):
         for layer in self.layers:
             x = layer(x)
         if avail_action is not None:
-            x = x.masked_fill(~avail_action, float("-inf"))
+            x = jnp.where(avail_action, x, jnp.finfo(jnp.float32).min)
         return x
 
 
 class ReplayBuffer:
     def __init__(
         self,
-        buffer_size,
-        num_agents,
-        obs_space,
-        action_space,
-        normalize_reward=False,
-        device="cpu",
+        buffer_size: int,
+        num_agents: int,
+        obs_space: int,
+        action_space: int,
+        rb_key: jax.Array,
+        normalize_reward: bool = False,
     ):
         self.buffer_size = buffer_size
         self.num_agents = num_agents
         self.obs_space = obs_space
         self.action_space = action_space
         self.normalize_reward = normalize_reward
-        self.device = device
-
-        self.obs = np.zeros((self.buffer_size, self.num_agents, self.obs_space))
-        self.action = np.zeros((self.buffer_size, self.num_agents))
-        self.reward = np.zeros((self.buffer_size))
-        self.next_obs = np.zeros((self.buffer_size, self.num_agents, self.obs_space))
-        self.next_avail_action = np.zeros(
-            (self.buffer_size, self.num_agents, self.action_space)
+        self.rb_key = rb_key
+        self.obs = np.zeros(
+            (self.buffer_size, self.num_agents, self.obs_space), dtype=np.float32
         )
-        self.done = np.zeros((self.buffer_size))
+        self.action = np.zeros((self.buffer_size, self.num_agents), dtype=np.int32)
+        self.reward = np.zeros((self.buffer_size), dtype=np.float32)
+        self.next_obs = np.zeros(
+            (self.buffer_size, self.num_agents, self.obs_space), dtype=np.float32
+        )
+        self.next_avail_action = np.zeros(
+            (self.buffer_size, self.num_agents, self.action_space), dtype=np.bool_
+        )
+        self.done = np.zeros((self.buffer_size), dtype=np.int32)
         self.pos = 0
         self.size = 0
 
-    def store(self, obs, action, reward, done, next_obs, next_avail_action):
+    def store(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        next_obs: np.ndarray,
+        next_avail_action: np.ndarray,
+    ):
         self.obs[self.pos] = obs
         self.action[self.pos] = action
         self.reward[self.pos] = reward
@@ -133,22 +158,32 @@ class ReplayBuffer:
         self.pos = (self.pos + 1) % self.buffer_size
         self.size = min(self.size + 1, self.buffer_size)
 
-    def sample(self, batch_size):
-        indices = np.random.randint(0, self.size, size=batch_size)
-        if self.normalize_reward:
-            mu = np.mean(self.reward[indices])
-            std = np.std(self.reward[indices])
-            rewards = (self.reward[indices] - mu) / (std + 1e-6)
-        else:
-            rewards = self.reward[indices]
-        return (
-            torch.from_numpy(self.obs[indices]).float().to(self.device),
-            torch.from_numpy(self.action[indices]).long().to(self.device),
-            torch.from_numpy(rewards).float().to(self.device),
-            torch.from_numpy(self.next_obs[indices]).float().to(self.device),
-            torch.from_numpy(self.next_avail_action[indices]).bool().to(self.device),
-            torch.from_numpy(self.done[indices]).float().to(self.device),
+    def sample(self, batch_size: int) -> Tuple[jnp.ndarray]:
+        self.rb_key, subkey = jax.random.split(self.rb_key)
+        indices = jax.random.randint(subkey, (batch_size,), minval=0, maxval=self.size)
+        obs_batch = self.obs[indices]
+        action_batch = self.action[indices]
+        reward_batch = self.reward[indices]
+        next_obs_batch = self.next_obs[indices]
+        next_avail_action_batch = self.next_avail_action[indices]
+        done_batch = self.done[indices]
+        batch = (
+            obs_batch,
+            action_batch,
+            reward_batch,
+            next_obs_batch,
+            next_avail_action_batch,
+            done_batch,
         )
+        obs, action, reward, next_obs, next_avail, done = jax.tree.map(
+            jnp.asarray, batch
+        )
+        if self.normalize_reward:
+            mu = jnp.mean(reward)
+            std = jnp.std(reward)
+            reward = (reward - mu) / (std + 1e-6)
+
+        return obs, action, reward, next_obs, next_avail, done
 
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
@@ -156,7 +191,9 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-def environment(env_type, env_name, env_family, agent_ids, kwargs):
+def environment(
+    env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict
+):
     if env_type == "pz":
         env = PettingZooWrapper(
             family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
@@ -165,32 +202,76 @@ def environment(env_type, env_name, env_family, agent_ids, kwargs):
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
         env = LBFWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
-
     return env
 
 
-def norm_d(grads, d):
-    norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
-    total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
-    return total_norm_d
+@nnx.jit
+def soft_update(target_state: Any, utility_state: Any, polyak: float) -> Any:
+    return jax.tree.map(
+        lambda t, s: polyak * s + (1.0 - polyak) * t, target_state, utility_state
+    )
 
 
-def soft_update(target_net, utility_net, polyak):
-    for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
-        target_param.data.copy_(
-            polyak * param.data + (1.0 - polyak) * target_param.data
-        )
+def loss_fn(
+    utility_network: nnx.Module,
+    target_network: nnx.Module,
+    batch: Tuple[jnp.ndarray],
+    gamma: float,
+):
+    (
+        batch_obs,
+        batch_action,
+        batch_reward,
+        batch_next_obs,
+        batch_next_avail_action,
+        batch_done,
+    ) = batch
+    q_next_max = target_network(
+        batch_next_obs, avail_action=batch_next_avail_action
+    ).max(axis=-1)
+    vdn_q_max = q_next_max.sum(axis=-1)
+    targets = batch_reward + gamma * (1 - batch_done) * vdn_q_max
+    q_values = jnp.take_along_axis(
+        arr=utility_network(batch_obs),
+        indices=jnp.expand_dims(batch_action, axis=-1),
+        axis=-1,
+    ).squeeze()
+    vdn_q_values = q_values.sum(axis=-1)
+    loss = optax.l2_loss(jax.lax.stop_gradient(targets), vdn_q_values).mean()
+    return loss
+
+
+@nnx.jit
+def training_step(
+    utility_network: nnx.Module,
+    target_network: nnx.Module,
+    optimizer: nnx.Optimizer,
+    batch: Tuple[jnp.ndarray],
+    gamma: float,
+):
+    loss, grads = nnx.value_and_grad(loss_fn)(
+        utility_network, target_network, batch, gamma
+    )
+    g_norm = optax.global_norm(grads)
+    optimizer.update(utility_network, grads)
+    return utility_network, optimizer, loss, g_norm
+
+
+@nnx.jit
+def select_action(network: Qnetwork, obs: jnp.ndarray, avail_action: jnp.ndarray):
+    q_values = network(obs, avail_action)
+    return jnp.argmax(q_values, axis=-1)
 
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
-    # Set the randomness seed
+    # Set the randomness
     seed = args.seed
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    device = torch.device(args.device)
+    key = jax.random.key(seed)
+    key, rb_key = jax.random.split(key)
+    rngs = nnx.Rngs(seed)
     # Import the environment
     kwargs = {}  # {"render_mode":'human',"shared_reward":False}
     env = environment(
@@ -207,28 +288,31 @@ if __name__ == "__main__":
         agent_ids=args.agent_ids,
         kwargs=kwargs,
     )
-
     # Initialize the utility and target networks
-    utility_network = Qnetwrok(
+    utility_network = Qnetwork(
         input_dim=env.get_obs_size(),
         hidden_dim=args.hidden_dim,
         num_layer=args.num_layers,
         output_dim=env.get_action_size(),
-    ).to(device)
-    target_network = copy.deepcopy(utility_network).to(device)
+        rngs=rngs,
+    )
+    target_network = nnx.clone(utility_network)
 
     # Initialize the optimizer
-    optimizer = getattr(optim, args.optimizer)
-    optimizer = optimizer(utility_network.parameters(), lr=args.learning_rate)
-
+    optimizer = getattr(optax, args.optimizer)(learning_rate=args.learning_rate)
+    if args.clip_gradients > 0:
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(args.clip_gradients), optimizer
+        )
+    optimizer = nnx.Optimizer(utility_network, optimizer, wrt=nnx.Param)
     # Initialize a shared replay buffer
     rb = ReplayBuffer(
         buffer_size=args.buffer_size,
         obs_space=env.get_obs_size(),
         action_space=env.get_action_size(),
         num_agents=env.n_agents,
+        rb_key=rb_key,
         normalize_reward=args.normalize_reward,
-        device=device,
     )
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
@@ -240,9 +324,9 @@ if __name__ == "__main__":
             entity=args.wnb_entity,
             sync_tensorboard=True,
             config=vars(args),
-            name=f"VDN-{run_name}",
+            name=f"VDN-JAX-{run_name}",
         )
-    writer = SummaryWriter(f"runs/VDN-{run_name}")
+    writer = SummaryWriter(f"runs/VDN-JAX-{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s"
@@ -269,12 +353,11 @@ if __name__ == "__main__":
         if random.random() < epsilon:
             actions = env.sample()
         else:
-            with torch.no_grad():
-                q_values = utility_network(
-                    x=torch.from_numpy(obs).float().to(device),
-                    avail_action=torch.from_numpy(avail_action).bool().to(device),
-                )
-            actions = torch.argmax(q_values, dim=-1).cpu()
+            actions = select_action(
+                utility_network,
+                jnp.asarray(obs),
+                jnp.asarray(avail_action).astype(jnp.bool_),
+            )
 
         next_obs, reward, done, truncated, infos = env.step(actions)
         next_avail_action = env.get_avail_actions()  # We need the next_avail_action to compute the target loss : max of Q(next_state)
@@ -282,7 +365,7 @@ if __name__ == "__main__":
         ep_reward += reward
         ep_length += 1
 
-        rb.store(obs, actions, reward, done, next_obs, next_avail_action)
+        rb.store(obs, np.asarray(actions), reward, done, next_obs, next_avail_action)
         obs = next_obs
         avail_action = next_avail_action
         if done or truncated:
@@ -298,47 +381,20 @@ if __name__ == "__main__":
 
         if step > args.learning_starts:
             if step % args.train_freq == 0:
-                (
-                    batch_obs,
-                    batch_action,
-                    batch_reward,
-                    batch_next_obs,
-                    batch_next_avail_action,
-                    batch_done,
-                ) = rb.sample(args.batch_size)
-                with torch.no_grad():
-                    q_next_max, _ = target_network(
-                        batch_next_obs, avail_action=batch_next_avail_action
-                    ).max(dim=-1)
-                vdn_q_max = q_next_max.sum(dim=-1)
-                targets = batch_reward + args.gamma * (1 - batch_done) * vdn_q_max
-
-                q_values = torch.gather(
-                    utility_network(batch_obs), dim=-1, index=batch_action.unsqueeze(-1)
-                ).squeeze()
-                vdn_q_values = q_values.sum(dim=-1)
-                loss = F.mse_loss(targets, vdn_q_values)
-                optimizer.zero_grad()
-                loss.backward()
-                grads = [p.grad for p in utility_network.parameters()]
-                vdn_gradients = norm_d(grads, 2)
-                if args.clip_gradients > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        utility_network.parameters(), max_norm=args.clip_gradients
-                    )
-                optimizer.step()
+                batch = rb.sample(args.batch_size)
+                utility_network, optimizer, loss, g_norm = training_step(
+                    utility_network, target_network, optimizer, batch, args.gamma
+                )
                 num_updates += 1
                 writer.add_scalar("train/loss", loss.item(), step)
-                writer.add_scalar("train/grads", vdn_gradients, step)
+                writer.add_scalar("train/grads", g_norm.item(), step)
                 writer.add_scalar("train/num_updates", num_updates, step)
 
             if step % args.target_network_update_freq == 0:
-                soft_update(
-                    target_net=target_network,
-                    utility_net=utility_network,
-                    polyak=args.polyak,
+                new_target_state = soft_update(
+                    nnx.state(target_network), nnx.state(utility_network), args.polyak
                 )
-
+                nnx.update(target_network, new_target_state)
         if len(ep_rewards) > args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
@@ -363,14 +419,12 @@ if __name__ == "__main__":
             current_reward = 0
             current_ep_length = 0
             while eval_ep < args.num_eval_ep:
-                q_values = utility_network(
-                    x=torch.from_numpy(eval_obs).float().to(device),
-                    avail_action=torch.tensor(
-                        eval_env.get_avail_actions(), dtype=torch.bool
-                    ).to(device),
+                actions = select_action(
+                    utility_network,
+                    jnp.asarray(eval_obs),
+                    jnp.asarray(eval_env.get_avail_actions().astype(jnp.bool)),
                 )
-                actions = torch.argmax(q_values, dim=-1)
-                next_obs_, reward, done, truncated, infos = eval_env.step(actions.cpu())
+                next_obs_, reward, done, truncated, infos = eval_env.step(actions)
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_
