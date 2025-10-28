@@ -24,6 +24,15 @@ dependencies = [
     "lbforaging==2.0.0",
     "smaclite @ git+https://github.com/uoe-agents/smaclite",
 ]
+
+[project.optional-dependencies]
+jax = [
+    "jax==0.8.0",
+    "jaxlib==0.8.0",
+    "flax==0.12.0",
+    "optax==0.2.6",
+    "chex==0.1.91",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
