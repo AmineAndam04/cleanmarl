@@ -19,19 +19,17 @@ dependencies = [
     "torch==2.9.0",
     "tyro==0.9.35",
     "numpy==2.3.4",
-    "pettingzoo==1.25.0",
-    "lbforaging==2.0.0",
-    "smaclite @ git+https://github.com/uoe-agents/smaclite",
-]
-
-[project.optional-dependencies]
-jax = [
     "jax==0.8.0",
     "jaxlib==0.8.0",
     "flax==0.12.0",
     "optax==0.2.6",
     "chex==0.1.91",
+    "pettingzoo==1.25.0",
+    "lbforaging==2.0.0",
+    "smaclite @ git+https://github.com/uoe-agents/smaclite",
 ]
+
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
