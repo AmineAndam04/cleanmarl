@@ -11,7 +11,7 @@ authors = [
 ]
 description = "Single file implementations of Deep Multi-Agent Reinforcement Learning algorithms"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 dependencies = [
     "tensorboard>=2.12.1",
     "wandb==0.21.1",
