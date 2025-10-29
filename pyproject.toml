@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 
 [project]
-name = "cmeanmarl"
+name = "cleanmarl"
 version = "0.0.1"
 authors = [
   { name="Amine Andam", email="andamamine83@gmail.com" },
@@ -19,8 +19,7 @@ dependencies = [
     "torch==2.9.0",
     "tyro==0.9.35",
     "numpy==2.3.4",
-    "jax==0.8.0",
-    "jaxlib==0.8.0",
+    "jax===0.7.1",
     "flax==0.12.0",
     "optax==0.2.6",
     "chex==0.1.91",
