@@ -26,7 +26,7 @@ class Args:
     """ Env family when using pz"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
-    batch_size: int = 10
+    batch_size: int = 3
     """ Number of episodes to collect in each rollout"""
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
@@ -374,7 +374,7 @@ def actor_loss(
         pg_loss = jax.lax.min(pg_loss1, pg_loss2).mean(axis=-1)
         pg_loss = jnp.where(mask_t, pg_loss, 0).sum()
         entropy_loss = -(jnp.exp(log_probs) * log_probs).mean(axis=-1)
-        entropy_loss = jnp.where(mask_t, entropy_loss, 0).sum()
+        entropy_loss = jnp.where(mask_t[:, None], entropy_loss, 0).sum()
         entropies += entropy_loss
 
         ac_loss += -pg_loss - train_config.entropy_coef * entropy_loss

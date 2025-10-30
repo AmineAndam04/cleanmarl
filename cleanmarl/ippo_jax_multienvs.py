@@ -15,6 +15,12 @@ from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
 from env.lbf import LBFWrapper
 from torch.utils.tensorboard import SummaryWriter
+import multiprocessing as mp
+
+# import os
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.6"
+# os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer="
 
 
 @dataclass
@@ -529,6 +535,7 @@ def critic_training_step(
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     args = tyro.cli(Args)
     # Set random seed
     seed = args.seed

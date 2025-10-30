@@ -20,7 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 class Args:
     env_type: str = "smaclite"
     """ Pettingzoo, SMAClite ... """
-    env_name: str = "3m"
+    env_name: str = "10m_vs_11m"
     """ Name of the environment"""
     env_family: str = "mpe"
     """ Env family when using pz"""
@@ -364,7 +364,7 @@ def actor_loss(
         pg_loss = jax.lax.min(pg_loss1, pg_loss2).mean(axis=-1)
         pg_loss = jnp.where(mask_t, pg_loss, 0).sum()
         entropy_loss = -(jnp.exp(log_probs) * log_probs).mean(axis=-1)
-        entropy_loss = jnp.where(mask_t, entropy_loss, 0).sum()
+        entropy_loss = jnp.where(mask_t[:, None], entropy_loss, 0).sum()
         entropies += entropy_loss
 
         ac_loss += -pg_loss - train_config.entropy_coef * entropy_loss
