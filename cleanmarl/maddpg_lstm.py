@@ -347,7 +347,7 @@ if __name__ == "__main__":
                     hard=True,
                 )  ## These are one hot-vectors
                 actions = actions.cpu().numpy()
-                actions_to_take = torch.argmax(actions, dim=-1)
+                actions_to_take = np.argmax(actions, axis=-1)
 
             next_obs, reward, done, truncated, infos = env.step(actions_to_take)
 
