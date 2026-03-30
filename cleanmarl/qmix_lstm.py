@@ -503,7 +503,7 @@ if __name__ == "__main__":
                         device
                     ),
                 )
-                actions = torch.argmax(q_values, dim=-1).cpu().numpy()
+                actions = torch.argmax(q_values, dim=-1).reshape(eval_env.n_agents).cpu().numpy()
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
                 current_reward += reward
                 current_ep_length += 1
