@@ -14,7 +14,7 @@
 /.vscode
 todo.txt
 /testing
-
+uv.lock
 # temp
 cleanmarl/env/smax_vec_wrapper.py
 cleanmarl/env/smax_wrapper.py
