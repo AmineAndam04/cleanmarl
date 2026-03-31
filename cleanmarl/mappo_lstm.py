@@ -325,7 +325,7 @@ if __name__ == "__main__":
                         avail_action=torch.from_numpy(avail_action).bool().to(device),
                     )
                     actions, log_probs = actions.cpu(), log_probs.cpu()
-                next_obs, reward, done, truncated, infos = env.step(actions)
+                next_obs, reward, done, truncated, infos = env.step(actions.numpy())
                 ep_reward += reward
                 ep_length += 1
                 step += 1
