@@ -1,16 +1,17 @@
 import copy
+import datetime
+import random
+from dataclasses import dataclass
+
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-import numpy as np
-from dataclasses import dataclass
 import tyro
-import random
+from env.lbf import LBFWrapper
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
-import torch.nn.functional as F
-import datetime
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -84,9 +85,7 @@ class Qnetwrok(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for i in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def forward(self, x, avail_action=None):
@@ -116,12 +115,10 @@ class ReplayBuffer:
 
         self.obs = np.zeros((self.buffer_size, self.num_agents, self.obs_space))
         self.action = np.zeros((self.buffer_size, self.num_agents))
-        self.reward = np.zeros((self.buffer_size))
+        self.reward = np.zeros(self.buffer_size)
         self.next_obs = np.zeros((self.buffer_size, self.num_agents, self.obs_space))
-        self.next_avail_action = np.zeros(
-            (self.buffer_size, self.num_agents, self.action_space)
-        )
-        self.done = np.zeros((self.buffer_size))
+        self.next_avail_action = np.zeros((self.buffer_size, self.num_agents, self.action_space))
+        self.done = np.zeros(self.buffer_size)
         self.pos = 0
         self.size = 0
 
@@ -160,9 +157,7 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
 
 def environment(env_type, env_name, env_family, agent_ids, kwargs):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -178,9 +173,7 @@ def norm_d(grads, d):
 
 def soft_update(target_net, utility_net, polyak):
     for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
-        target_param.data.copy_(
-            polyak * param.data + (1.0 - polyak) * target_param.data
-        )
+        target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
 
 
 if __name__ == "__main__":
@@ -230,7 +223,7 @@ if __name__ == "__main__":
         normalize_reward=args.normalize_reward,
         device=device,
     )
-    time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # noqa: DTZ005
     run_name = f"{args.env_type}__{args.env_name}__{time_token}"
     if args.use_wnb:
         import wandb
@@ -245,19 +238,16 @@ if __name__ == "__main__":
     writer = SummaryWriter(f"runs/VDN-{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s"
-        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n{}".format(
+            "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
+        ),
     )
 
     obs, _ = env.reset(seed=seed)
     avail_action = env.get_avail_actions()
-    ep_rewards = []
-    ep_lengths = []
-    ep_stats = []
-    ep_reward = 0
-    ep_length = 0
-    num_episodes = 0
-    num_updates = 0
+    ep_rewards, ep_lengths, ep_stats = [], [], []
+    ep_reward, ep_length = 0, 0
+    num_episodes, num_updates = 0, 0
     for step in range(args.total_timesteps):
         ## select actions
         epsilon = linear_schedule(
@@ -276,7 +266,9 @@ if __name__ == "__main__":
                 )
             actions = torch.argmax(q_values, dim=-1).cpu().numpy()
         next_obs, reward, done, truncated, infos = env.step(actions)
-        next_avail_action = env.get_avail_actions()  # We need the next_avail_action to compute the target loss : max of Q(next_state)
+        next_avail_action = (
+            env.get_avail_actions()
+        )  # We need the next_avail_action to compute the target loss : max of Q(next_state)
 
         ep_reward += reward
         ep_length += 1
@@ -364,14 +356,12 @@ if __name__ == "__main__":
             while eval_ep < args.num_eval_ep:
                 q_values = utility_network(
                     x=torch.from_numpy(eval_obs).float().to(device),
-                    avail_action=torch.tensor(
-                        eval_env.get_avail_actions(), dtype=torch.bool
-                    ).to(device),
+                    avail_action=torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool).to(
+                        device
+                    ),
                 )
                 actions = torch.argmax(q_values, dim=-1)
-                next_obs_, reward, done, truncated, infos = eval_env.step(
-                    actions.cpu().numpy()
-                )
+                next_obs_, reward, done, truncated, infos = eval_env.step(actions.cpu().numpy())
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_
