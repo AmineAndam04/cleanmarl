@@ -745,7 +745,9 @@ if __name__ == "__main__":
                             eval_env.get_avail_actions(), dtype=torch.bool
                         ).to(device),
                     )
-                next_obs_, reward, done, truncated, infos = eval_env.step(actions.cpu().numpy())
+                next_obs_, reward, done, truncated, infos = eval_env.step(
+                    actions.reshape(eval_env.n_agents).cpu().numpy()
+                )
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_

@@ -267,7 +267,7 @@ def env_worker(conn, env_serialized):
             content = {"actions": actions}
             conn.send(content)
         elif task == "step":
-            next_obs, reward, done, truncated, infos = env.step(content)
+            next_obs, reward, done, truncated, infos = env.step(content.cpu().numpy())
             avail_actions = env.get_avail_actions()
             state = env.get_state()
             content = {
