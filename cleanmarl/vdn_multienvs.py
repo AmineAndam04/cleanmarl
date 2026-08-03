@@ -356,12 +356,9 @@ if __name__ == "__main__":
 
     ep_reward = np.zeros(args.num_envs)
     ep_length = np.zeros(args.num_envs)
-    ep_rewards = []
-    ep_lengths = []
-    ep_stats = []
+    ep_rewards, ep_lengths, ep_stats = [], [], []
+    losses, gradients = [], []
     step = 0
-    num_updates = 0
-    num_episodes = 0
     while step < args.total_timesteps:
         ## select actions
         epsilon = linear_schedule(
@@ -416,22 +413,6 @@ if __name__ == "__main__":
                     ep_stats.append(infos[i])
                 ep_reward[i] = 0
                 ep_length[i] = 0
-                num_episodes += 1
-
-        if len(ep_rewards) > args.log_every:
-            writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
-            writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
-            writer.add_scalar("rollout/epsilon", epsilon, step)
-            writer.add_scalar("rollout/num_episodes", num_episodes, step)
-            if args.env_type == "smaclite":
-                writer.add_scalar(
-                    "rollout/battle_won",
-                    np.mean([info["battle_won"] for info in ep_stats]),
-                    step,
-                )
-            ep_rewards = []
-            ep_lengths = []
-            ep_stats = []
 
         if step > args.learning_starts and step % (args.train_freq * args.num_envs) == 0:
             (
@@ -462,10 +443,8 @@ if __name__ == "__main__":
                     utility_network.parameters(), max_norm=args.clip_gradients
                 )
             optimizer.step()
-            num_updates += 1
-            writer.add_scalar("train/loss", loss, step)
-            writer.add_scalar("train/grads", vdn_gradients, step)
-            writer.add_scalar("train/num_updates", num_updates, step)
+            losses.append(loss.item())
+            gradients.append(vdn_gradients.item())
 
             if step % (args.target_network_update_freq * args.num_envs) == 0:
                 soft_update(
@@ -473,6 +452,23 @@ if __name__ == "__main__":
                     utility_net=utility_network,
                     polyak=args.polyak,
                 )
+
+        if len(ep_rewards) > args.log_every:
+            writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
+            writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
+            writer.add_scalar("rollout/epsilon", epsilon, step)
+            if len(losses) > 0:
+                writer.add_scalar("train/loss", np.mean(losses), step)
+                writer.add_scalar("train/grads", np.mean(gradients), step)
+            if args.env_type == "smaclite":
+                writer.add_scalar(
+                    "rollout/battle_won",
+                    np.mean([info["battle_won"] for info in ep_stats]),
+                    step,
+                )
+            ep_rewards, ep_lengths, ep_stats = [], [], []
+            losses, gradients = [], []
+
         if step > 0 and step % (args.eval_steps * args.num_envs) == 0:
             eval_obs, _ = eval_env.reset()
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []

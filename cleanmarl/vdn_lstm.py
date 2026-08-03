@@ -290,6 +290,7 @@ if __name__ == "__main__":
     )
     current_seq_len, ep_reward, ep_length = 0, 0, 0
     ep_rewards, ep_lengths, ep_stats = [], [], []
+    losses, gradients = [], []
     obs, _ = env.reset(seed=seed)
     avail_action = env.get_avail_actions()
     h = None
@@ -473,8 +474,8 @@ if __name__ == "__main__":
                         utility_network.parameters(), max_norm=args.clip_gradients
                     )
                 optimizer.step()
-                writer.add_scalar("train/loss", loss, step)
-                writer.add_scalar("train/grads", vdn_gradients, step)
+                losses.append(loss.item())
+                gradients.append(vdn_gradients.item())
 
             if step % args.target_network_update_freq == 0:
                 soft_update(
@@ -487,15 +488,17 @@ if __name__ == "__main__":
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
             writer.add_scalar("rollout/epsilon", epsilon, step)
+            if len(losses) > 0:
+                writer.add_scalar("train/loss", np.mean(losses), step)
+                writer.add_scalar("train/grads", np.mean(gradients), step)
             if args.env_type == "smaclite":
                 writer.add_scalar(
                     "rollout/battle_won",
                     np.mean([info["battle_won"] for info in ep_stats]),
                     step,
                 )
-            ep_rewards = []
-            ep_lengths = []
-            ep_stats = []
+            ep_rewards, ep_lengths, ep_stats = [], [], []
+            losses, gradients = [], []
         if step % args.eval_steps == 0 and step > args.learning_starts:
             eval_obs, _ = eval_env.reset()
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
