@@ -11,7 +11,7 @@ import tyro
 import random
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
+from cleanmarl.env.lbf_wrapper import LBFWrapper
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -134,9 +134,7 @@ class Actor(nnx.Module):
                 nnx.Linear(hidden_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
             )
             self.layers.append(nnx.relu)
-        self.layers.append(
-            nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs)
-        )
+        self.layers.append(nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs))
 
     def __call__(
         self,
@@ -194,9 +192,7 @@ class Actor(nnx.Module):
 
 
 class Qnetwrok(nnx.Module):
-    def __init__(
-        self, input_dim: int, hidden_dim: int, num_layer: int, *, rngs: nnx.Rngs
-    ):
+    def __init__(self, input_dim: int, hidden_dim: int, num_layer: int, *, rngs: nnx.Rngs):
         super().__init__()
         kernel_init = jax.nn.initializers.orthogonal()
         self.layers = nnx.List(
@@ -210,9 +206,7 @@ class Qnetwrok(nnx.Module):
                 nnx.Linear(hidden_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
             )
             self.layers.append(nnx.relu)
-        self.layers.append(
-            nnx.Linear(hidden_dim, 1, kernel_init=kernel_init, rngs=rngs)
-        )
+        self.layers.append(nnx.Linear(hidden_dim, 1, kernel_init=kernel_init, rngs=rngs))
 
     def __call__(self, x: jnp.ndarray):
         for layer in self.layers:
@@ -230,12 +224,8 @@ class MixingNetwork(nnx.Module):
         self.hypernet_weight_1 = nnx.Linear(
             s_dim, n_agents * hidden_dim, kernel_init=kernel_init, rngs=rngs
         )
-        self.hypernet_bias_1 = nnx.Linear(
-            s_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs
-        )
-        self.hypernet_weight_2 = nnx.Linear(
-            s_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs
-        )
+        self.hypernet_bias_1 = nnx.Linear(s_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
+        self.hypernet_weight_2 = nnx.Linear(s_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
         self.hypernet_bias_2 = nnx.Sequential(
             nnx.Linear(
                 s_dim,
@@ -245,9 +235,7 @@ class MixingNetwork(nnx.Module):
                 rngs=rngs,
             ),
             nnx.relu,
-            nnx.Linear(
-                hidden_dim, 1, kernel_init=kernel_init, bias_init=bias_init, rngs=rngs
-            ),
+            nnx.Linear(hidden_dim, 1, kernel_init=kernel_init, bias_init=bias_init, rngs=rngs),
         )
 
     def __call__(self, Q, s):
@@ -300,9 +288,7 @@ class ReplayBuffer:
         lengths = [len(episode["obs"]) for episode in batch]
         max_length = max(lengths)
         obs = np.zeros((batch_size, max_length, self.num_agents, self.obs_space))
-        avail_actions = np.zeros(
-            (batch_size, max_length, self.num_agents, self.action_space)
-        )
+        avail_actions = np.zeros((batch_size, max_length, self.num_agents, self.action_space))
         actions = np.zeros((batch_size, max_length, self.num_agents, self.action_space))
         reward = np.zeros((batch_size, max_length))
         states = np.zeros((batch_size, max_length, self.state_space))
@@ -331,13 +317,9 @@ class ReplayBuffer:
         return (obs, actions, reward, states, avail_actions, done, mask)
 
 
-def environment(
-    env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict
-):
+def environment(env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -352,9 +334,7 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
 
 @nnx.jit
 def soft_update(target_state: Any, utility_state: Any, polyak: float):
-    return jax.tree.map(
-        lambda t, s: polyak * s + (1.0 - polyak) * t, target_state, utility_state
-    )
+    return jax.tree.map(lambda t, s: polyak * s + (1.0 - polyak) * t, target_state, utility_state)
 
 
 @nnx.jit
@@ -365,9 +345,7 @@ def select_action(
     avail_action: jnp.ndarray,
     eps: float = 0,
 ):
-    actions, actions_to_take = actor(
-        x=obs, key=key, avail_action=avail_action, hard=True, eps=eps
-    )
+    actions, actions_to_take = actor(x=obs, key=key, avail_action=avail_action, hard=True, eps=eps)
     return actions, actions_to_take
 
 
@@ -393,15 +371,11 @@ def critic_loss(
     )
 
     def q_tot_t(carry, batch_t):
-        q_values = critic_nets["critic"](
-            jnp.concat([batch_t[0], batch_t[1]], axis=-1)
-        ).squeeze()
+        q_values = critic_nets["critic"](jnp.concat([batch_t[0], batch_t[1]], axis=-1)).squeeze()
         q_tot = critic_nets["mixer"](Q=q_values, s=batch_t[-1]).squeeze()
         return carry, q_tot
 
-    _, q_tot = jax.lax.scan(
-        f=q_tot_t, init=0, xs=(batch_obs, batch_action, batch_states)
-    )
+    _, q_tot = jax.lax.scan(f=q_tot_t, init=0, xs=(batch_obs, batch_action, batch_states))
     targets = jnp.zeros_like(q_tot)
 
     def target_t(carry, batch_t):
@@ -466,9 +440,7 @@ def actor_loss(
         obs_t, avail_action_t, states_t, mask_t = batch_t
         prev_key, touse_key = jax.random.split(prev_key)
         actions, _ = actor(obs_t, touse_key, avail_action=avail_action_t, hard=False)
-        q_values = critic_nets["critic"](
-            jnp.concat([obs_t, actions], axis=-1)
-        ).squeeze()
+        q_values = critic_nets["critic"](jnp.concat([obs_t, actions], axis=-1)).squeeze()
         q_tot = critic_nets["mixer"](Q=q_values, s=states_t).squeeze()
         ac_loss = jnp.where(mask_t, q_tot, 0).sum()
         carry = prev_loss - ac_loss
@@ -549,16 +521,10 @@ if __name__ == "__main__":
     target_mixer = nnx.clone(mixer)
 
     critic_nets = nnx.Dict({"critic": critic, "mixer": mixer})
-    target_critic_nets = nnx.Dict(
-        {"target_critic": target_critic, "target_mixer": target_mixer}
-    )
+    target_critic_nets = nnx.Dict({"target_critic": target_critic, "target_mixer": target_mixer})
     ## initialize the optimizer
-    actor_optimizer = getattr(optax, args.optimizer)(
-        learning_rate=args.learning_rate_actor
-    )
-    critic_optimizer = getattr(optax, args.optimizer)(
-        learning_rate=args.learning_rate_critic
-    )
+    actor_optimizer = getattr(optax, args.optimizer)(learning_rate=args.learning_rate_actor)
+    critic_optimizer = getattr(optax, args.optimizer)(learning_rate=args.learning_rate_critic)
     if args.clip_gradients > 0:
         actor_optimizer = optax.chain(
             optax.clip_by_global_norm(args.clip_gradients), actor_optimizer
@@ -612,9 +578,7 @@ if __name__ == "__main__":
             "done": [],
             "avail_actions": [],
         }
-        epsilon = linear_schedule(
-            args.start_e, args.end_e, args.exploration_fraction, num_updates
-        )
+        epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction, num_updates)
         obs, _ = env.reset()
         ep_reward, ep_length = 0, 0
         done, truncated = False, False
@@ -629,9 +593,7 @@ if __name__ == "__main__":
                 avail_action=jnp.asarray(avail_action).astype(jnp.bool_),
                 eps=epsilon,
             )
-            next_obs, reward, done, truncated, infos = env.step(
-                np.array(actions_to_take)
-            )
+            next_obs, reward, done, truncated, infos = env.step(np.array(actions_to_take))
             ep_reward += reward
             ep_length += 1
             step += 1
@@ -681,23 +643,19 @@ if __name__ == "__main__":
                     )
                 )
                 ## Train the actor
-                actor, actor_optimizer, ac_loss, actor_gradients, train_key = (
-                    actor_training_step(
-                        actor,
-                        critic_nets,
-                        actor_optimizer,
-                        batch=(batch[0], batch[4], batch[3], batch[-1]),
-                        train_key=train_key,
-                    )
+                actor, actor_optimizer, ac_loss, actor_gradients, train_key = actor_training_step(
+                    actor,
+                    critic_nets,
+                    actor_optimizer,
+                    batch=(batch[0], batch[4], batch[3], batch[-1]),
+                    train_key=train_key,
                 )
                 num_updates += 1
 
                 writer.add_scalar("train/critic_loss", cr_loss.item(), step)
                 writer.add_scalar("train/actor_loss", ac_loss.item(), step)
                 writer.add_scalar("train/actor_gradients", actor_gradients.item(), step)
-                writer.add_scalar(
-                    "train/critic_gradients", critic_gradients.item(), step
-                )
+                writer.add_scalar("train/critic_gradients", critic_gradients.item(), step)
                 writer.add_scalar("train/num_updates", num_updates, step)
             if num_episode % args.target_network_update_freq == 0:
                 new_target_state = soft_update(
@@ -733,9 +691,7 @@ if __name__ == "__main__":
                         actor,
                         jnp.asarray(eval_obs),
                         act_key,
-                        avail_action=jnp.asarray(eval_env.get_avail_actions()).astype(
-                            jnp.bool_
-                        ),
+                        avail_action=jnp.asarray(eval_env.get_avail_actions()).astype(jnp.bool_),
                     )
                     next_obs_, reward, done, truncated, infos = eval_env.step(
                         np.array(eval_actions)
@@ -757,9 +713,7 @@ if __name__ == "__main__":
                 if args.env_type == "smaclite":
                     writer.add_scalar(
                         "eval/battle_won",
-                        np.mean(
-                            np.mean([info["battle_won"] for info in eval_ep_stats])
-                        ),
+                        np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])),
                         step,
                     )
 

@@ -1,7 +1,9 @@
-from .common_interface import CommonInterface
-from gymnasium.spaces import flatdim, Box
 import importlib
+
 import numpy as np
+from gymnasium.spaces import Box, flatdim
+
+from .common_interface import CommonInterface
 
 
 class PettingZooWrapper(CommonInterface):
@@ -9,7 +11,7 @@ class PettingZooWrapper(CommonInterface):
     def __init__(self, family, env_name, agent_ids=False, **kwargs):
         """
         PettingZoo has families of environments (Atari, Butterfly, Classic, MPE, SISL)
-        if order to use the pursuit game (sisl family), you usually import it like this:
+        in order to use the pursuit game (sisl family), you usually import it like this:
          >>>>from pettingzoo.sisl import pursuit_v4
          >>>>pursuit_env = pursuit_v4.parallel_env(render_mode="human")
         """
@@ -58,15 +60,12 @@ class PettingZooWrapper(CommonInterface):
         return obs, rewards[0], done, truncated, info
 
     def get_obs_size(self):
-        """Returns the shape of the observation"""
         return self.obs_dim + self.agent_ids * self.n_agents
 
     def get_state_size(self):
-        """Returns the size of the state (needed for QMIX)"""
         return self.obs_dim * self.n_agents
 
     def get_state(self):
-        """Returns the global state (needed for QMIX)"""
         return self.state
 
     def get_action_size(self):

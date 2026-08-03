@@ -11,7 +11,7 @@ import tyro
 import random
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
+from cleanmarl.env.lbf_wrapper import LBFWrapper
 import datetime
 from torch.utils.tensorboard import SummaryWriter
 
@@ -91,9 +91,7 @@ class TrainConfig:
 
 
 class Qnetwork(nnx.Module):
-    def __init__(
-        self, input_dim: int, hidden_dim: int, output_dim: int, *, rngs: nnx.Rngs
-    ):
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, *, rngs: nnx.Rngs):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.fc1 = nnx.Linear(input_dim, hidden_dim, rngs=rngs)
@@ -138,9 +136,7 @@ class ReplayBuffer:
             (self.buffer_size, self.seq_length, self.num_agents, self.obs_space),
             dtype=np.float32,
         )
-        self.action = np.zeros(
-            (self.buffer_size, self.seq_length, self.num_agents), dtype=np.int32
-        )
+        self.action = np.zeros((self.buffer_size, self.seq_length, self.num_agents), dtype=np.int32)
         self.reward = np.zeros((self.buffer_size, self.seq_length), dtype=np.float32)
         self.next_obs = np.zeros(
             (self.buffer_size, self.seq_length, self.num_agents, self.obs_space),
@@ -168,16 +164,10 @@ class ReplayBuffer:
         if is_last:
             toadd = self.seq_length - len(obs)
             obs = np.concatenate((self.obs[self.last_pos][-toadd:], obs), axis=0)
-            action = np.concatenate(
-                (self.action[self.last_pos][-toadd:], action), axis=0
-            )
-            reward = np.concatenate(
-                (self.reward[self.last_pos][-toadd:], reward), axis=0
-            )
+            action = np.concatenate((self.action[self.last_pos][-toadd:], action), axis=0)
+            reward = np.concatenate((self.reward[self.last_pos][-toadd:], reward), axis=0)
             done = np.concatenate((self.done[self.last_pos][-toadd:], done), axis=0)
-            next_obs = np.concatenate(
-                (self.next_obs[self.last_pos][-toadd:], next_obs), axis=0
-            )
+            next_obs = np.concatenate((self.next_obs[self.last_pos][-toadd:], next_obs), axis=0)
             next_avail_action = np.concatenate(
                 (self.next_avail_action[self.last_pos][-toadd:], next_avail_action),
                 axis=0,
@@ -209,9 +199,7 @@ class ReplayBuffer:
             next_avail_action_batch,
             done_batch,
         )
-        obs, action, reward, next_obs, next_avail, done = jax.tree.map(
-            jnp.asarray, batch
-        )
+        obs, action, reward, next_obs, next_avail, done = jax.tree.map(jnp.asarray, batch)
         if self.normalize_reward:
             mu = jnp.mean(reward)
             std = jnp.std(reward)
@@ -224,13 +212,9 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-def environment(
-    env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict
-):
+def environment(env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -240,9 +224,7 @@ def environment(
 
 @nnx.jit
 def soft_update(target_state: Any, utility_state: Any, polyak: float) -> Any:
-    return jax.tree.map(
-        lambda t, s: polyak * s + (1.0 - polyak) * t, target_state, utility_state
-    )
+    return jax.tree.map(lambda t, s: polyak * s + (1.0 - polyak) * t, target_state, utility_state)
 
 
 def loss_fn(
@@ -274,9 +256,7 @@ def loss_fn(
         _, h_utility = utility_network(batch_obs_t, h=h_utility)
         return (h_target, h_utility), None
 
-    h = jnp.zeros(
-        (train_config.batch_size * train_config.n_agents, train_config.hidden_dim)
-    )
+    h = jnp.zeros((train_config.batch_size * train_config.n_agents, train_config.hidden_dim))
     h_burnt, _ = jax.lax.scan(
         burn_in,
         (h, h),
@@ -306,10 +286,7 @@ def loss_fn(
             arr=q_values, indices=jnp.expand_dims(batch_action_t, axis=-1), axis=-1
         ).squeeze()
         vdn_q_values = q_values.sum(axis=-1)
-        temp_loss = (
-            temp_loss
-            + optax.l2_loss(jax.lax.stop_gradient(targets), vdn_q_values).mean()
-        )
+        temp_loss = temp_loss + optax.l2_loss(jax.lax.stop_gradient(targets), vdn_q_values).mean()
         return (h_target, h_utility, temp_loss), None
 
     (_, _, loss), _ = jax.lax.scan(
@@ -336,9 +313,7 @@ def training_step(
     batch: Tuple[jnp.ndarray],
     train_config: TrainConfig,
 ):
-    loss, grads = nnx.value_and_grad(loss_fn)(
-        utility_network, target_network, batch, train_config
-    )
+    loss, grads = nnx.value_and_grad(loss_fn)(utility_network, target_network, batch, train_config)
     g_norm = optax.global_norm(grads)
     optimizer.update(utility_network, grads)
     return utility_network, optimizer, loss, g_norm
@@ -390,9 +365,7 @@ if __name__ == "__main__":
 
     optimizer = getattr(optax, args.optimizer)(learning_rate=args.learning_rate)
     if args.clip_gradients > 0:
-        optimizer = optax.chain(
-            optax.clip_by_global_norm(args.clip_gradients), optimizer
-        )
+        optimizer = optax.chain(optax.clip_by_global_norm(args.clip_gradients), optimizer)
     optimizer = nnx.Optimizer(utility_network, optimizer, wrt=nnx.Param)
 
     rb = ReplayBuffer(
@@ -466,7 +439,9 @@ if __name__ == "__main__":
         if random.random() < epsilon:
             actions = env.sample()
         next_obs, reward, done, truncated, infos = env.step(np.array(actions))
-        next_avail_action = env.get_avail_actions()  # We need the next_avail_action to compute the target loss : max of Q(next_state)
+        next_avail_action = (
+            env.get_avail_actions()
+        )  # We need the next_avail_action to compute the target loss : max of Q(next_state)
 
         ep_reward += reward
         ep_length += 1
@@ -496,7 +471,14 @@ if __name__ == "__main__":
                 seq_done,
                 seq_next_obs,
                 seq_next_avail_action,
-            ) = [], [], [], [], [], []
+            ) = (
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+            )
 
         if done or truncated:
             obs, _ = env.reset()
@@ -527,7 +509,14 @@ if __name__ == "__main__":
                     seq_done,
                     seq_next_obs,
                     seq_next_avail_action,
-                ) = [], [], [], [], [], []
+                ) = (
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                )
 
         if step > args.learning_starts:
             if step % args.train_freq == 0:
@@ -576,9 +565,7 @@ if __name__ == "__main__":
                     h_eval,
                     jnp.asarray(eval_env.get_avail_actions().astype(jnp.bool)),
                 )
-                next_obs_, reward, done, truncated, infos = eval_env.step(
-                    np.array(actions)
-                )
+                next_obs_, reward, done, truncated, infos = eval_env.step(np.array(actions))
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_

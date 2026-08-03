@@ -11,7 +11,7 @@ import random
 import datetime
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
+from cleanmarl.env.lbf_wrapper import LBFWrapper
 from torch.utils.tensorboard import SummaryWriter
 
 

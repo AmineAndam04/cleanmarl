@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import torch.nn.functional as F
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
+from cleanmarl.env.lbf_wrapper import LBFWrapper
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
@@ -109,26 +109,18 @@ class RolloutBuffer:
         self.pos = 0
         lengths = [len(episode["obs"]) for episode in self.episodes]
         max_length = max(lengths)
-        obs = torch.zeros(
-            (self.buffer_size, max_length, self.num_agents, self.obs_space)
-        ).to(self.device)
+        obs = torch.zeros((self.buffer_size, max_length, self.num_agents, self.obs_space)).to(
+            self.device
+        )
         avail_actions = torch.zeros(
             (self.buffer_size, max_length, self.num_agents, self.action_space)
         ).to(self.device)
-        actions = torch.zeros((self.buffer_size, max_length, self.num_agents)).to(
-            self.device
-        )
-        log_probs = torch.zeros((self.buffer_size, max_length, self.num_agents)).to(
-            self.device
-        )
+        actions = torch.zeros((self.buffer_size, max_length, self.num_agents)).to(self.device)
+        log_probs = torch.zeros((self.buffer_size, max_length, self.num_agents)).to(self.device)
         reward = torch.zeros((self.buffer_size, max_length)).to(self.device)
-        states = torch.zeros((self.buffer_size, max_length, self.state_space)).to(
-            self.device
-        )
+        states = torch.zeros((self.buffer_size, max_length, self.state_space)).to(self.device)
         done = torch.zeros((self.buffer_size, max_length)).to(self.device)
-        mask = torch.zeros(self.buffer_size, max_length, dtype=torch.bool).to(
-            self.device
-        )
+        mask = torch.zeros(self.buffer_size, max_length, dtype=torch.bool).to(self.device)
         for i in range(self.buffer_size):
             length = lengths[i]
             obs[i, :length] = self.episodes[i]["obs"]
@@ -163,9 +155,7 @@ class Actor(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for i in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def act(self, x, avail_action=None):
@@ -188,9 +178,7 @@ class Critic(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for i in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, 1)))
 
     def forward(self, x):
@@ -206,9 +194,7 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
 
 def environment(env_type, env_name, env_family, agent_ids, kwargs):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -321,9 +307,7 @@ if __name__ == "__main__":
                         torch.from_numpy(obs).float().to(device),
                         avail_action=torch.from_numpy(avail_action).bool().to(device),
                     )
-                next_obs, reward, done, truncated, infos = env.step(
-                    actions.cpu().numpy()
-                )
+                next_obs, reward, done, truncated, infos = env.step(actions.cpu().numpy())
                 ep_reward += reward
                 ep_length += 1
                 step += 1
@@ -404,12 +388,9 @@ if __name__ == "__main__":
                     return_lambda[ep_idx, t] = last_return_lambda = b_reward[
                         ep_idx, t
                     ] + args.gamma * (
-                        args.td_lambda * last_return_lambda
-                        + (1 - args.td_lambda) * next_value
+                        args.td_lambda * last_return_lambda + (1 - args.td_lambda) * next_value
                     )
-                    advantages[ep_idx, t] = return_lambda[ep_idx, t] - critic(
-                        x=b_states[ep_idx, t]
-                    )
+                    advantages[ep_idx, t] = return_lambda[ep_idx, t] - critic(x=b_states[ep_idx, t])
 
         if args.normalize_advantage:
             adv_mu = advantages.mean(dim=-1)[b_mask].mean()
@@ -436,9 +417,7 @@ if __name__ == "__main__":
             for t in range(b_obs.size(1)):
                 # policy gradient (PG) loss
                 ## PG: compute the ratio:
-                current_logits = actor.logits(
-                    x=b_obs[:, t], avail_action=b_avail_actions[:, t]
-                )
+                current_logits = actor.logits(x=b_obs[:, t], avail_action=b_avail_actions[:, t])
                 current_dist = Categorical(logits=current_logits)
                 current_logprob = current_dist.log_prob(b_actions[:, t])
 
@@ -450,9 +429,7 @@ if __name__ == "__main__":
                     ratio, 1 - args.ppo_clip, 1 + args.ppo_clip
                 )
                 pg_loss = (
-                    torch.min(pg_loss1[b_mask[:, t]], pg_loss2[b_mask[:, t]])
-                    .mean(dim=-1)
-                    .sum()
+                    torch.min(pg_loss1[b_mask[:, t]], pg_loss2[b_mask[:, t]]).mean(dim=-1).sum()
                 )
 
                 # Compute entropy bonus
@@ -468,15 +445,10 @@ if __name__ == "__main__":
                 critic_loss += value_loss
 
                 # track kl distance
-                b_kl_divergence = (
-                    ((ratio - 1) - log_ratio)[b_mask[:, t]].mean(dim=-1).sum()
-                )
+                b_kl_divergence = ((ratio - 1) - log_ratio)[b_mask[:, t]].mean(dim=-1).sum()
                 kl_divergence += b_kl_divergence
                 clipped_ratio += (
-                    ((ratio - 1.0).abs() > args.ppo_clip)[b_mask[:, t]]
-                    .float()
-                    .mean(dim=-1)
-                    .sum()
+                    ((ratio - 1.0).abs() > args.ppo_clip)[b_mask[:, t]].float().mean(dim=-1).sum()
                 )
 
             actor_loss /= b_mask.sum()
@@ -494,12 +466,8 @@ if __name__ == "__main__":
             actor_gradient = norm_d([p.grad for p in actor.parameters()], 2)
             critic_gradient = norm_d([p.grad for p in critic.parameters()], 2)
             if args.clip_gradients > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    actor.parameters(), max_norm=args.clip_gradients
-                )
-                torch.nn.utils.clip_grad_norm_(
-                    critic.parameters(), max_norm=args.clip_gradients
-                )
+                torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.clip_gradients)
+                torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=args.clip_gradients)
             actor_optimizer.step()
             critic_optimizer.step()
             training_step += 1
@@ -537,9 +505,7 @@ if __name__ == "__main__":
                         .bool()
                         .to(device),
                     )
-                next_obs_, reward, done, truncated, infos = eval_env.step(
-                    actions.cpu().numpy()
-                )
+                next_obs_, reward, done, truncated, infos = eval_env.step(actions.cpu().numpy())
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_

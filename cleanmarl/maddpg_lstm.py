@@ -9,7 +9,7 @@ import tyro
 import random
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
+from cleanmarl.env.lbf_wrapper import LBFWrapper
 import torch.nn.functional as F
 import datetime
 from torch.utils.tensorboard import SummaryWriter

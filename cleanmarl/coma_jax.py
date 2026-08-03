@@ -12,7 +12,7 @@ import numpy as np
 from dataclasses import dataclass
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
+from cleanmarl.env.lbf_wrapper import LBFWrapper
 from env.common_interface import CommonInterface
 from torch.utils.tensorboard import SummaryWriter
 
@@ -128,13 +128,9 @@ class RolloutBuffer:
             (self.buffer_size, max_length, self.num_agents, self.action_space),
             dtype=np.bool_,
         )
-        actions = np.zeros(
-            (self.buffer_size, max_length, self.num_agents), dtype=np.int32
-        )
+        actions = np.zeros((self.buffer_size, max_length, self.num_agents), dtype=np.int32)
         reward = np.zeros((self.buffer_size, max_length), dtype=np.float32)
-        states = np.zeros(
-            (self.buffer_size, max_length, self.state_space), dtype=np.float32
-        )
+        states = np.zeros((self.buffer_size, max_length, self.state_space), dtype=np.float32)
         done = np.zeros((self.buffer_size, max_length), dtype=np.int32)
         mask = np.zeros((self.buffer_size, max_length), dtype=np.bool_)
         for i in range(self.buffer_size):
@@ -181,9 +177,7 @@ class Actor(nnx.Module):
                 nnx.Linear(hidden_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
             )
             self.layers.append(nnx.relu)
-        self.layers.append(
-            nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs)
-        )
+        self.layers.append(nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs))
 
     def __call__(
         self,
@@ -235,9 +229,7 @@ class Critic(nnx.Module):
                 nnx.Linear(hidden_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
             )
             self.layers.append(nnx.relu)
-        self.layers.append(
-            nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs)
-        )
+        self.layers.append(nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs))
 
     def __call__(
         self,
@@ -259,13 +251,9 @@ class Critic(nnx.Module):
             x = jnp.where(avail_actions, x, jnp.finfo(jnp.float32).min)
         return x.squeeze()
 
-    def coma_inputs(
-        self, state: jnp.ndarray, observations: jnp.ndarray, actions: jnp.ndarray
-    ):
+    def coma_inputs(self, state: jnp.ndarray, observations: jnp.ndarray, actions: jnp.ndarray):
         coma_inputs = jnp.zeros((state.shape[0], self.num_agents, self.input_dim))
-        coma_inputs = coma_inputs.at[:, :, : state.shape[-1]].set(
-            jnp.expand_dims(state, axis=1)
-        )
+        coma_inputs = coma_inputs.at[:, :, : state.shape[-1]].set(jnp.expand_dims(state, axis=1))
 
         coma_inputs = coma_inputs.at[
             :, :, state.shape[-1] : state.shape[-1] + observations.shape[-1]
@@ -276,24 +264,18 @@ class Critic(nnx.Module):
             array=jnp.expand_dims(one_hot, axis=1),
             shape=(state.shape[0], self.num_agents, self.num_agents, self.output_dim),
         )
-        oh = oh.reshape(
-            state.shape[0], self.num_agents, (self.num_agents * self.output_dim)
-        )
+        oh = oh.reshape(state.shape[0], self.num_agents, (self.num_agents * self.output_dim))
         oh = jnp.moveaxis(oh, 1, 0)
         cleaned_oh = []
         for agent_idx in range(1, self.num_agents + 1):
             before = jnp.expand_dims(
                 oh[agent_idx - 1, :, : (agent_idx - 1) * self.output_dim], axis=0
             )
-            after = jnp.expand_dims(
-                oh[agent_idx - 1, :, agent_idx * self.output_dim :], axis=0
-            )
+            after = jnp.expand_dims(oh[agent_idx - 1, :, agent_idx * self.output_dim :], axis=0)
             cleaned_oh.append(jnp.concatenate([before, after], axis=-1))
         oh = jnp.concatenate(cleaned_oh)
         oh = jnp.moveaxis(oh, 1, 0)
-        coma_inputs = coma_inputs.at[
-            :, :, state.shape[-1] + observations.shape[-1] :
-        ].set(oh)
+        coma_inputs = coma_inputs.at[:, :, state.shape[-1] + observations.shape[-1] :].set(oh)
         return coma_inputs
 
 
@@ -302,13 +284,9 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-def environment(
-    env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict
-):
+def environment(env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -319,18 +297,14 @@ def environment(
 
 def get_coma_critic_input_dim(env: CommonInterface):
     critic_input_dim = (
-        env.get_obs_size()
-        + env.get_state_size()
-        + (env.n_agents - 1) * env.get_action_size()
+        env.get_obs_size() + env.get_state_size() + (env.n_agents - 1) * env.get_action_size()
     )
     return critic_input_dim
 
 
 @nnx.jit
 def soft_update(target_state: Any, utility_state: Any, polyak: Any):
-    return jax.tree.map(
-        lambda t, s: polyak * s + (1.0 - polyak) * t, target_state, utility_state
-    )
+    return jax.tree.map(lambda t, s: polyak * s + (1.0 - polyak) * t, target_state, utility_state)
 
 
 @partial(jax.jit, static_argnums=(2, 3))
@@ -366,16 +340,10 @@ def td_lambda(
             return return_lambda_t, return_lambda_t
 
         xs = (
-            jax.lax.dynamic_slice_in_dim(
-                b_states[int(ep_idx)], 1, (ep_len - 1), axis=0
-            ),
+            jax.lax.dynamic_slice_in_dim(b_states[int(ep_idx)], 1, (ep_len - 1), axis=0),
             jax.lax.dynamic_slice_in_dim(b_obs[int(ep_idx)], 1, (ep_len - 1), axis=0),
-            jax.lax.dynamic_slice_in_dim(
-                b_actions[int(ep_idx)], 1, (ep_len - 1), axis=0
-            ),
-            jax.lax.dynamic_slice_in_dim(
-                b_avail_actions[int(ep_idx)], 1, ep_len - 1, axis=0
-            ),
+            jax.lax.dynamic_slice_in_dim(b_actions[int(ep_idx)], 1, (ep_len - 1), axis=0),
+            jax.lax.dynamic_slice_in_dim(b_avail_actions[int(ep_idx)], 1, ep_len - 1, axis=0),
             jax.lax.dynamic_slice_in_dim(b_reward[int(ep_idx)], 0, ep_len - 1, axis=0),
         )
         _, return_lambda_ep = jax.lax.scan(
@@ -385,9 +353,7 @@ def td_lambda(
             reverse=True,
         )
         return_lambda = return_lambda.at[ep_idx, : ep_len - 1].set(return_lambda_ep)
-        return_lambda = return_lambda.at[ep_idx, ep_len - 1].set(
-            b_reward[ep_idx][ep_len - 1]
-        )
+        return_lambda = return_lambda.at[ep_idx, ep_len - 1].set(b_reward[ep_idx][ep_len - 1])
     return return_lambda
 
 
@@ -403,9 +369,7 @@ def select_action(
     return actions
 
 
-def critic_loss(
-    critic: nnx.Module, batch: Tuple[jnp.ndarray], return_lambda: jnp.ndarray
-):
+def critic_loss(critic: nnx.Module, batch: Tuple[jnp.ndarray], return_lambda: jnp.ndarray):
     def cr_loss_t(carry, batch_t):
         states_t, obs_t, actions_t, mask_t, return_lambda_t = batch_t
         tq_values = critic(state=states_t, observations=obs_t, actions=actions_t)
@@ -546,12 +510,8 @@ if __name__ == "__main__":
     )
     target_critic = nnx.clone(critic)
     # optimizer
-    actor_optimizer = getattr(optax, args.optimizer)(
-        learning_rate=args.learning_rate_actor
-    )
-    critic_optimizer = getattr(optax, args.optimizer)(
-        learning_rate=args.learning_rate_critic
-    )
+    actor_optimizer = getattr(optax, args.optimizer)(learning_rate=args.learning_rate_actor)
+    critic_optimizer = getattr(optax, args.optimizer)(learning_rate=args.learning_rate_critic)
     if args.clip_gradients > 0:
         actor_optimizer = optax.chain(
             optax.clip_by_global_norm(args.clip_gradients), actor_optimizer
@@ -656,9 +616,7 @@ if __name__ == "__main__":
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
             writer.add_scalar("rollout/epsilon", epsilon, step)
-            writer.add_scalar(
-                "rollout/num_episodes", (training_step + 1) * args.batch_size, step
-            )
+            writer.add_scalar("rollout/num_episodes", (training_step + 1) * args.batch_size, step)
             if args.env_type == "smaclite":
                 writer.add_scalar(
                     "rollout/battle_won",
@@ -694,9 +652,7 @@ if __name__ == "__main__":
         training_step += 1
 
         if training_step % args.target_network_update_freq == 0:
-            new_target_state = soft_update(
-                nnx.state(target_critic), nnx.state(critic), args.polyak
-            )
+            new_target_state = soft_update(nnx.state(target_critic), nnx.state(critic), args.polyak)
             nnx.update(target_critic, new_target_state)
         ### 3. Update actor
 
@@ -731,9 +687,7 @@ if __name__ == "__main__":
                     eps=0,
                     act_key=act_key,
                 )
-                next_obs_, reward, done, truncated, infos = eval_env.step(
-                    np.array(actions)
-                )
+                next_obs_, reward, done, truncated, infos = eval_env.step(np.array(actions))
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_

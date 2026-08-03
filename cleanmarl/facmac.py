@@ -8,7 +8,7 @@ import tyro
 import random
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
+from cleanmarl.env.lbf_wrapper import LBFWrapper
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 import datetime
@@ -90,9 +90,7 @@ class Actor(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for i in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def act(self, x, avail_action, hard=False, eps=0):
@@ -120,9 +118,7 @@ class Qnetwrok(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for i in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, 1)))
 
     def forward(self, x):
@@ -198,15 +194,13 @@ class ReplayBuffer:
         lengths = [len(episode["obs"]) for episode in batch]
         # print(lengths)
         max_length = max(lengths)
-        obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(
-            self.device
-        )
+        obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(self.device)
         avail_actions = torch.zeros(
             (batch_size, max_length, self.num_agents, self.action_space)
         ).to(self.device)
-        actions = torch.zeros(
-            (batch_size, max_length, self.num_agents, self.action_space)
-        ).to(self.device)
+        actions = torch.zeros((batch_size, max_length, self.num_agents, self.action_space)).to(
+            self.device
+        )
         reward = torch.zeros((batch_size, max_length)).to(self.device)
         states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
         done = torch.ones((batch_size, max_length)).to(self.device)
@@ -240,9 +234,7 @@ class ReplayBuffer:
 
 def environment(env_type, env_name, env_family, agent_ids, kwargs):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -259,9 +251,7 @@ def norm_d(grads, d):
 
 def soft_update(target_net, utility_net, polyak):
     for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
-        target_param.data.copy_(
-            polyak * param.data + (1.0 - polyak) * target_param.data
-        )
+        target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
 
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
@@ -365,9 +355,7 @@ if __name__ == "__main__":
             "done": [],
             "avail_actions": [],
         }
-        epsilon = linear_schedule(
-            args.start_e, args.end_e, args.exploration_fraction, num_updates
-        )
+        epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction, num_updates)
         obs, _ = env.reset()
         ep_reward, ep_length = 0, 0
         done, truncated = False, False
@@ -383,14 +371,10 @@ if __name__ == "__main__":
                 ).cpu()  ## These are one hot-vectors
                 if epsilon > 0:
                     actions_to_take = actions.clone()
-                    actions = F.one_hot(
-                        actions.long(), num_classes=env.get_action_size()
-                    )
+                    actions = F.one_hot(actions.long(), num_classes=env.get_action_size())
                 else:
                     actions_to_take = torch.argmax(actions, dim=-1)
-            next_obs, reward, done, truncated, infos = env.step(
-                actions_to_take.cpu().numpy()
-            )
+            next_obs, reward, done, truncated, infos = env.step(actions_to_take.cpu().numpy())
 
             ep_reward += reward
             ep_length += 1
@@ -461,9 +445,7 @@ if __name__ == "__main__":
                             )
                             targets = (
                                 batch_reward[:, t]
-                                + args.gamma
-                                * (1 - batch_done[:, t])
-                                * q_tot_from_target_mixer
+                                + args.gamma * (1 - batch_done[:, t]) * q_tot_from_target_mixer
                             )
                     q_values = critic(
                         torch.cat((batch_obs[:, t], batch_action[:, t]), dim=-1)
@@ -480,9 +462,7 @@ if __name__ == "__main__":
                     torch.nn.utils.clip_grad_norm_(
                         critic.parameters(), max_norm=args.clip_gradients
                     )
-                    torch.nn.utils.clip_grad_norm_(
-                        mixer.parameters(), max_norm=args.clip_gradients
-                    )
+                    torch.nn.utils.clip_grad_norm_(mixer.parameters(), max_norm=args.clip_gradients)
                 critic_optimizer.step()
 
                 perm = torch.randperm(batch_obs.size(1) - 1)
@@ -493,9 +473,7 @@ if __name__ == "__main__":
                         avail_action=batch_avail_action[:, t],
                         hard=False,
                     )
-                    q_values = critic(
-                        torch.cat((batch_obs[:, t], actions), dim=-1)
-                    ).squeeze()
+                    q_values = critic(torch.cat((batch_obs[:, t], actions), dim=-1)).squeeze()
                     q_tot = mixer(Q=q_values, s=batch_states[:, t]).squeeze()
                     actor_loss -= q_tot[batch_mask[:, t]].sum()
                 actor_loss /= batch_mask.sum()
@@ -503,9 +481,7 @@ if __name__ == "__main__":
                 actor_loss.backward()
                 actor_gradients = norm_d([p.grad for p in actor.parameters()], 2)
                 if args.clip_gradients > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        actor.parameters(), max_norm=args.clip_gradients
-                    )
+                    torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.clip_gradients)
                 actor_optimizer.step()
                 num_updates += 1
 
@@ -515,15 +491,9 @@ if __name__ == "__main__":
                 writer.add_scalar("train/critic_gradients", critic_gradients, step)
                 writer.add_scalar("train/num_updates", num_updates, step)
             if num_episode % args.target_network_update_freq == 0:
-                soft_update(
-                    target_net=target_actor, utility_net=actor, polyak=args.polyak
-                )
-                soft_update(
-                    target_net=target_critic, utility_net=critic, polyak=args.polyak
-                )
-                soft_update(
-                    target_net=target_mixer, utility_net=mixer, polyak=args.polyak
-                )
+                soft_update(target_net=target_actor, utility_net=actor, polyak=args.polyak)
+                soft_update(target_net=target_critic, utility_net=critic, polyak=args.polyak)
+                soft_update(target_net=target_mixer, utility_net=mixer, polyak=args.polyak)
             if num_episode % args.eval_steps == 0:
                 eval_obs, _ = eval_env.reset()
                 eval_ep = 0
@@ -561,9 +531,7 @@ if __name__ == "__main__":
                 if args.env_type == "smaclite":
                     writer.add_scalar(
                         "eval/battle_won",
-                        np.mean(
-                            np.mean([info["battle_won"] for info in eval_ep_stats])
-                        ),
+                        np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])),
                         step,
                     )
 

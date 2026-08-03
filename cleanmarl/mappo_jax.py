@@ -12,7 +12,7 @@ import numpy as np
 from dataclasses import dataclass
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
+from cleanmarl.env.lbf_wrapper import LBFWrapper
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -122,16 +122,10 @@ class RolloutBuffer:
             (self.buffer_size, max_length, self.num_agents, self.action_space),
             dtype=np.bool_,
         )
-        actions = np.zeros(
-            (self.buffer_size, max_length, self.num_agents), dtype=np.int32
-        )
-        log_probs = np.zeros(
-            (self.buffer_size, max_length, self.num_agents), dtype=np.float32
-        )
+        actions = np.zeros((self.buffer_size, max_length, self.num_agents), dtype=np.int32)
+        log_probs = np.zeros((self.buffer_size, max_length, self.num_agents), dtype=np.float32)
         reward = np.zeros((self.buffer_size, max_length), dtype=np.float32)
-        states = np.zeros(
-            (self.buffer_size, max_length, self.state_space), dtype=np.float32
-        )
+        states = np.zeros((self.buffer_size, max_length, self.state_space), dtype=np.float32)
         done = np.zeros((self.buffer_size, max_length), dtype=np.int32)
         mask = np.zeros((self.buffer_size, max_length), dtype=np.bool_)
         for i in range(self.buffer_size):
@@ -145,11 +139,9 @@ class RolloutBuffer:
             done[i, :length] = np.stack(self.episodes[i]["done"])
             mask[i, :length] = 1
 
-        obs, actions, log_probs, reward, states, avail_actions, done, mask = (
-            jax.tree.map(
-                jnp.asarray,
-                (obs, actions, log_probs, reward, states, avail_actions, done, mask),
-            )
+        obs, actions, log_probs, reward, states, avail_actions, done, mask = jax.tree.map(
+            jnp.asarray,
+            (obs, actions, log_probs, reward, states, avail_actions, done, mask),
         )
         if self.normalize_reward:
             mu = jnp.mean(reward[mask])
@@ -182,9 +174,7 @@ class Actor(nnx.Module):
                 nnx.Linear(hidden_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
             )
             self.layers.append(nnx.relu)
-        self.layers.append(
-            nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs)
-        )
+        self.layers.append(nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs))
 
     def __call__(
         self,
@@ -209,9 +199,7 @@ class Actor(nnx.Module):
 
 
 class Critic(nnx.Module):
-    def __init__(
-        self, input_dim: int, hidden_dim: int, num_layer: int, *, rngs: nnx.Rngs
-    ):
+    def __init__(self, input_dim: int, hidden_dim: int, num_layer: int, *, rngs: nnx.Rngs):
         super().__init__()
         kernel_init = jax.nn.initializers.orthogonal()
         self.layers = nnx.List(
@@ -225,9 +213,7 @@ class Critic(nnx.Module):
                 nnx.Linear(hidden_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
             )
             self.layers.append(nnx.relu)
-        self.layers.append(
-            nnx.Linear(hidden_dim, 1, kernel_init=kernel_init, rngs=rngs)
-        )
+        self.layers.append(nnx.Linear(hidden_dim, 1, kernel_init=kernel_init, rngs=rngs))
 
     def __call__(self, x: jnp.ndarray):
         for layer in self.layers:
@@ -240,13 +226,9 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-def environment(
-    env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict
-):
+def environment(env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -273,12 +255,8 @@ def td_lambda_advantage(
     train_config: TrainConfig,
 ):
     b_state, b_reward = batch
-    return_lambda = jnp.zeros(
-        (*b_state.shape[:-1], train_config.n_agents), dtype=jnp.float32
-    )
-    advantages = jnp.zeros(
-        (*b_state.shape[:-1], train_config.n_agents), dtype=jnp.float32
-    )
+    return_lambda = jnp.zeros((*b_state.shape[:-1], train_config.n_agents), dtype=jnp.float32)
+    advantages = jnp.zeros((*b_state.shape[:-1], train_config.n_agents), dtype=jnp.float32)
     for ep_idx in range(return_lambda.shape[0]):
         ep_len = ep_lens[ep_idx]
         next_values = critic(b_state[ep_idx, :ep_len])
@@ -378,9 +356,7 @@ def actor_loss(
         entropies += entropy_loss
 
         ac_loss += -pg_loss - train_config.entropy_coef * entropy_loss
-        kl_divergence_t = jnp.where(
-            mask_t, ((ratio - 1) - log_ratio).mean(axis=-1), 0
-        ).sum()
+        kl_divergence_t = jnp.where(mask_t, ((ratio - 1) - log_ratio).mean(axis=-1), 0).sum()
         kl_divergence += kl_divergence_t
         clipped_ratio_t = jnp.where(
             mask_t, (jnp.absolute(ratio - 1.0) > train_config.ppo_clip).mean(axis=-1), 0
@@ -424,9 +400,7 @@ def actor_training_step(
     )
 
 
-def critic_loss(
-    critic: nnx.Module, batch: Tuple[jnp.ndarray], return_lambda: jnp.ndarray
-):
+def critic_loss(critic: nnx.Module, batch: Tuple[jnp.ndarray], return_lambda: jnp.ndarray):
     def critic_loss_t(carry, batch_t):
         state_t, mask_t, return_lambda_t = batch_t
         current_values = critic(state_t)
@@ -498,12 +472,8 @@ if __name__ == "__main__":
     )
 
     # Optimizers
-    actor_optimizer = getattr(optax, args.optimizer)(
-        learning_rate=args.learning_rate_actor
-    )
-    critic_optimizer = getattr(optax, args.optimizer)(
-        learning_rate=args.learning_rate_critic
-    )
+    actor_optimizer = getattr(optax, args.optimizer)(learning_rate=args.learning_rate_actor)
+    critic_optimizer = getattr(optax, args.optimizer)(learning_rate=args.learning_rate_critic)
     if args.clip_gradients > 0:
         actor_optimizer = optax.chain(
             optax.clip_by_global_norm(args.clip_gradients), actor_optimizer
@@ -703,13 +673,9 @@ if __name__ == "__main__":
                     actor,
                     jnp.asarray(eval_obs),
                     act_key,
-                    avail_action=jnp.asarray(eval_env.get_avail_actions()).astype(
-                        jnp.bool_
-                    ),
+                    avail_action=jnp.asarray(eval_env.get_avail_actions()).astype(jnp.bool_),
                 )
-                next_obs_, reward, done, truncated, infos = eval_env.step(
-                    np.array(actions)
-                )
+                next_obs_, reward, done, truncated, infos = eval_env.step(np.array(actions))
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_

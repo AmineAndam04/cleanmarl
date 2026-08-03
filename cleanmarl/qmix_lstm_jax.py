@@ -11,7 +11,7 @@ import tyro
 import random
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
+from cleanmarl.env.lbf_wrapper import LBFWrapper
 import datetime
 from torch.utils.tensorboard import SummaryWriter
 
@@ -86,17 +86,13 @@ class TrainConfig:
 
 
 class Qnetwork(nnx.Module):
-    def __init__(
-        self, input_dim: int, hidden_dim: int, output_dim: int, *, rngs: nnx.Rngs
-    ):
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, *, rngs: nnx.Rngs):
         super().__init__()
         self.hidden_dim = hidden_dim
         kernel_init = jax.nn.initializers.orthogonal()
         self.fc1 = nnx.Linear(input_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
         self.gru = nnx.GRUCell(hidden_dim, hidden_dim, rngs=rngs)
-        self.fc2 = nnx.Linear(
-            hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs
-        )
+        self.fc2 = nnx.Linear(hidden_dim, output_dim, kernel_init=kernel_init, rngs=rngs)
 
     def __call__(
         self,
@@ -123,12 +119,8 @@ class MixingNetwork(nnx.Module):
         self.hypernet_weight_1 = nnx.Linear(
             s_dim, n_agents * hidden_dim, kernel_init=kernel_init, rngs=rngs
         )
-        self.hypernet_bias_1 = nnx.Linear(
-            s_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs
-        )
-        self.hypernet_weight_2 = nnx.Linear(
-            s_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs
-        )
+        self.hypernet_bias_1 = nnx.Linear(s_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
+        self.hypernet_weight_2 = nnx.Linear(s_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs)
         self.hypernet_bias_2 = nnx.Sequential(
             nnx.Linear(s_dim, hidden_dim, kernel_init=kernel_init, rngs=rngs),
             nnx.relu,
@@ -184,9 +176,7 @@ class ReplayBuffer:
         batch = [self.episodes[i] for i in indices]
         lengths = [len(episode["obs"]) for episode in batch]
         max_length = max(lengths)
-        obs = np.zeros(
-            (batch_size, max_length, self.num_agents, self.obs_space), dtype=np.float32
-        )
+        obs = np.zeros((batch_size, max_length, self.num_agents, self.obs_space), dtype=np.float32)
         avail_actions = np.zeros(
             (batch_size, max_length, self.num_agents, self.action_space), dtype=np.bool_
         )
@@ -196,9 +186,7 @@ class ReplayBuffer:
             (batch_size, max_length, self.num_agents, self.obs_space), dtype=np.float32
         )
         states = np.zeros((batch_size, max_length, self.state_space), dtype=np.float32)
-        next_states = np.zeros(
-            (batch_size, max_length, self.state_space), dtype=np.float32
-        )
+        next_states = np.zeros((batch_size, max_length, self.state_space), dtype=np.float32)
         done = np.zeros((batch_size, max_length), dtype=np.int32)
         mask = np.zeros((batch_size, max_length), dtype=np.bool_)
 
@@ -264,13 +252,9 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-def environment(
-    env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict
-):
+def environment(env_type: str, env_name: str, env_family: str, agent_ids: bool, kwargs: dict):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -280,9 +264,7 @@ def environment(
 
 @nnx.jit
 def soft_update(target_state: Any, utility_state: Any, polyak: Any):
-    return jax.tree.map(
-        lambda t, s: polyak * s + (1.0 - polyak) * t, target_state, utility_state
-    )
+    return jax.tree.map(lambda t, s: polyak * s + (1.0 - polyak) * t, target_state, utility_state)
 
 
 @nnx.jit
@@ -321,12 +303,8 @@ def loss_fn(
         )
         q_next = q_next.reshape(train_config.batch_size, train_config.n_agents, -1)
         q_next_max = q_next.max(axis=-1)
-        q_tot_target = target_net["target_mixer"](
-            Q=q_next_max, s=batch_next_states_t
-        ).squeeze()
-        targets = (
-            batch_reward_t + train_config.gamma * (1 - batch_done_t) * q_tot_target
-        )
+        q_tot_target = target_net["target_mixer"](Q=q_next_max, s=batch_next_states_t).squeeze()
+        targets = batch_reward_t + train_config.gamma * (1 - batch_done_t) * q_tot_target
         q_values, h_utility = net["utility_network"](batch_obs_t, h=h_utility)
         q_values = q_values.reshape(train_config.batch_size, train_config.n_agents, -1)
         q_values = jnp.take_along_axis(
@@ -406,15 +384,11 @@ if __name__ == "__main__":
 
     ## We put the nets in a dict so we can do something like pytorch "list(utility_network.parameters()) + list(mixer.parameters())"
     nets = nnx.Dict({"utility_network": utility_network, "mixer": mixer})
-    target_nets = nnx.Dict(
-        {"target_network": target_network, "target_mixer": target_mixer}
-    )
+    target_nets = nnx.Dict({"target_network": target_network, "target_mixer": target_mixer})
     ## initialize the optimizer
     optimizer = getattr(optax, args.optimizer)(learning_rate=args.learning_rate)
     if args.clip_gradients > 0:
-        optimizer = optax.chain(
-            optax.clip_by_global_norm(args.clip_gradients), optimizer
-        )
+        optimizer = optax.chain(optax.clip_by_global_norm(args.clip_gradients), optimizer)
     optimizer = nnx.Optimizer(nets, optimizer, wrt=nnx.Param)
 
     ## initialize a shared replay buffer
@@ -491,7 +465,9 @@ if __name__ == "__main__":
                 actions = env.sample()
 
             next_obs, reward, done, truncated, infos = env.step(np.array(actions))
-            avail_action = env.get_avail_actions()  # Get the mask of 'next_obs' and store it in the replay, we need it for the bellman loss
+            avail_action = (
+                env.get_avail_actions()
+            )  # Get the mask of 'next_obs' and store it in the replay, we need it for the bellman loss
             next_state = env.get_state()
 
             episode["obs"].append(obs)
@@ -604,9 +580,7 @@ if __name__ == "__main__":
                     h_eval,
                     jnp.asarray(eval_env.get_avail_actions().astype(jnp.bool)),
                 )
-                next_obs_, reward, done, truncated, infos = eval_env.step(
-                    np.array(actions)
-                )
+                next_obs_, reward, done, truncated, infos = eval_env.step(np.array(actions))
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_
