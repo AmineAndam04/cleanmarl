@@ -42,3 +42,10 @@ Homepage = "https://cleanmarl-docs.readthedocs.io/en/latest/"
 
 [tool.setuptools.packages.find]
 include = ["cleanmarl*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
+ignore = ["PLR0402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

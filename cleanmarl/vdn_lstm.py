@@ -1,67 +1,80 @@
 import copy
+import datetime
+import random
+from dataclasses import dataclass
+
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-import numpy as np
-from dataclasses import dataclass
 import tyro
-import random
+from env.lbf import LBFWrapper
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from env.lbf import LBFWrapper
-import torch.nn.functional as F
-import datetime
 from torch.utils.tensorboard import SummaryWriter
 
 
 @dataclass
 class Args:
-    env_type: str = "pz"
+    # Environment
+    env_type: str = "smaclite"  # "pz"
     """ pz(for Pettingzoo), smaclite (for SMAClite), lbf (for LBF) ... """
-    env_name: str = "simple_spread_v3"
-    """ Name of the environment"""
+    env_name: str = "3m"  # "simple_spread_v3" #"pursuit_v4"
+    """ Name of the environment """
     env_family: str = "mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
+    # Network
+    hidden_dim: int = 64
+    """ Hidden dimension"""
+    num_layers: int = 1
+    """ Number of layers"""
+    # Training
+    total_timesteps: int = 1000000
+    """ Total steps in the environment during training"""
+    train_freq: int = 10
+    """ Train the network each «train_freq» step in the environment. The used value is train_freq*num_envs"""
     buffer_size: int = 10000
     """ The size of the replay buffer"""
     seq_length: int = 10
     """ Length of the sequence to store in the buffer"""
     burn_in: int = 2
     """Sequences to burn during batch updates"""
-    total_timesteps: int = 1000000
-    """ Total steps in the environment during training"""
+    batch_size: int = 32
+    """Batch size"""
     gamma: float = 0.99
     """ Discount factor"""
     learning_starts: int = 5000
     """ Number of env steps to initialize the replay buffer"""
-    train_freq: int = 10
-    """ Train the network each «train_freq» step in the environment. The used value is train_freq*num_envs"""
-    optimizer: str = "AdamW"
-    """ The optimizer"""
     learning_rate: float = 0.00001
     """ Learning rate"""
-    batch_size: int = 32
-    """Batch size"""
+    optimizer: str = "AdamW"
+    """ The optimizer"""
+    target_network_update_freq: int = 1
+    """ Frequency of updating target network. The used value is target_network_update_freq*num_envs"""
+    polyak: float = 0.005
+    """ Update the target network each target_network_update_freq» step in the environment"""
+    normalize_reward: bool = True
+    """ Normalize the rewards"""
+    clip_gradients: float = -1
+    """ 0< for no clipping and 0> if clipping at clip_gradients"""
     start_e: float = 1
     """ The starting value of epsilon, for exploration"""
     end_e: float = 0.05
     """ The end value of epsilon, for exploration"""
     exploration_fraction: float = 0.05
     """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
-    hidden_dim: int = 64
-    """ Hidden dimension"""
-    num_layers: int = 1
-    """ Number of layers"""
-    normalize_reward: bool = True
-    """ Normalize the rewards"""
-    target_network_update_freq: int = 1
-    """ Frequency of updating target network. The used value is target_network_update_freq*num_envs"""
-    polyak: float = 0.005
-    """ Update the target network each target_network_update_freq» step in the environment"""
-    clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    device: str = "cpu"
+    """ Device (cpu, cuda, mps)"""
+    seed: int = 1
+    """ Random seed"""
+    # Logging
+    work_dir: str = "runs"
+    """ Folder to save logs, weights..."""
+    save_model: bool = False
+    """ If True, save the weights of the agents and hyperparameters"""
     log_every: int = 10
     """ Logging steps"""
     eval_steps: int = 10000
@@ -74,12 +87,6 @@ class Args:
     """ Weights & Biases project name"""
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
-    save_model: bool = False
-    """ If True, save the weights of the agents and hyperparameters"""
-    device: str = "cpu"
-    """ Device (cpu, cuda, mps)"""
-    seed: int = 1
-    """ Random seed"""
 
 
 class Qnetwrok(nn.Module):
@@ -216,6 +223,9 @@ if __name__ == "__main__":
     np.random.seed(seed)
     torch.manual_seed(seed)
     device = torch.device(args.device)
+    if torch.cuda.is_available() and args.device == "cuda":
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
     kwargs = {}  # {"render_mode":'human',"shared_reward":False}
     env = environment(
         env_type=args.env_type,
@@ -238,8 +248,8 @@ if __name__ == "__main__":
         output_dim=env.get_action_size(),
     ).to(device)
     target_network = copy.deepcopy(utility_network).to(device)
-
-    optimizer = getattr(optim, args.optimizer)  # get which optimizer to use from args
+    # Initialize the optimizer
+    optimizer = getattr(optim, args.optimizer)
     optimizer = optimizer(utility_network.parameters(), lr=args.learning_rate)
 
     rb = ReplayBuffer(
@@ -263,15 +273,13 @@ if __name__ == "__main__":
             config=vars(args),
             name=f"VDN-LSTM-{run_name}",
         )
-    writer = SummaryWriter(f"runs/VDN-LSTM-{run_name}")
+    writer = SummaryWriter(f"{args.work_dir}/VDN-LSTM-{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s"
-        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n{}".format(
+            "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
+        ),
     )
-    obs, _ = env.reset(seed=seed)
-    avail_action = env.get_avail_actions()
-    h = None
     seq_obs, seq_actions, seq_reward, seq_done, seq_next_obs, seq_next_avail_action = (
         [],
         [],
@@ -280,14 +288,11 @@ if __name__ == "__main__":
         [],
         [],
     )
-    current_seq_len = 0
-    ep_reward = 0
-    ep_length = 0
-    ep_rewards = []
-    ep_lengths = []
-    ep_stats = []
-    num_updates = 0
-    num_episodes = 0
+    current_seq_len, ep_reward, ep_length = 0, 0, 0
+    ep_rewards, ep_lengths, ep_stats = [], [], []
+    obs, _ = env.reset(seed=seed)
+    avail_action = env.get_avail_actions()
+    h = None
     for step in range(args.total_timesteps):
         epsilon = linear_schedule(
             args.start_e,
@@ -298,9 +303,9 @@ if __name__ == "__main__":
         # We always need the forward pass even when taking random actions in order to let the h flow through time
         with torch.no_grad():
             q_values, h = utility_network(
-                x=torch.from_numpy(obs).float().to(args.device),
+                x=torch.from_numpy(obs).float().to(device),
                 h=h,
-                avail_action=torch.tensor(avail_action, dtype=torch.bool).to(device),
+                avail_action=torch.from_numpy(avail_action).bool().to(device),
             )
             q_values = q_values.squeeze(1)
         if random.random() < epsilon:
@@ -361,9 +366,8 @@ if __name__ == "__main__":
                 ep_stats.append(infos)
             ep_reward = 0
             ep_length = 0
-            num_episodes += 1
             h = None
-            if 0 < current_seq_len and current_seq_len < args.seq_length:
+            if current_seq_len > 0 and current_seq_len < args.seq_length:
                 current_seq_len = 0
                 rb.store(
                     np.stack(seq_obs),
@@ -469,10 +473,8 @@ if __name__ == "__main__":
                         utility_network.parameters(), max_norm=args.clip_gradients
                     )
                 optimizer.step()
-                num_updates += 1
                 writer.add_scalar("train/loss", loss, step)
                 writer.add_scalar("train/grads", vdn_gradients, step)
-                writer.add_scalar("train/num_updates", num_updates, step)
 
             if step % args.target_network_update_freq == 0:
                 soft_update(
@@ -485,7 +487,6 @@ if __name__ == "__main__":
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
             writer.add_scalar("rollout/epsilon", epsilon, step)
-            writer.add_scalar("rollout/num_episodes", num_episodes, step)
             if args.env_type == "smaclite":
                 writer.add_scalar(
                     "rollout/battle_won",
@@ -497,21 +498,18 @@ if __name__ == "__main__":
             ep_stats = []
         if step % args.eval_steps == 0 and step > args.learning_starts:
             eval_obs, _ = eval_env.reset()
-            eval_ep = 0
-            eval_ep_reward = []
-            eval_ep_length = []
-            eval_ep_stats = []
-            current_reward = 0
-            current_ep_length = 0
+            eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
+            eval_ep, current_reward, current_ep_length = 0, 0, 0
             h_eval = None
             while eval_ep < args.num_eval_ep:
-                q_values, h_eval = utility_network(
-                    torch.from_numpy(eval_obs).float().to(device),
-                    h=h_eval,
-                    avail_action=torch.tensor(
-                        eval_env.get_avail_actions(), dtype=torch.bool, device=device
-                    ),
-                )
+                with torch.no_grad():
+                    q_values, h_eval = utility_network(
+                        torch.from_numpy(eval_obs).float().to(device),
+                        h=h_eval,
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
+                        .bool()
+                        .to(device),
+                    )
                 q_values = q_values.squeeze(1)
                 actions = torch.argmax(q_values, dim=-1).cpu().numpy()
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
@@ -538,13 +536,13 @@ if __name__ == "__main__":
                 )
     if args.save_model:
         # Save the weights
-        vdn_model_path = f"runs/VDN-LSTM-{run_name}/agent.pt"
+        vdn_model_path = f"{args.work_dir}/VDN-LSTM-{run_name}/agent.pt"
         torch.save(utility_network.state_dict(), vdn_model_path)
         # Save the args
         import json
         from dataclasses import asdict
 
-        vdn_args_path = f"runs/VDN-LSTM-{run_name}/args.json"
+        vdn_args_path = f"{args.work_dir}/VDN-LSTM-{run_name}/args.json"
         with open(vdn_args_path, "w") as f:
             json.dump(asdict(args), f, indent=2)
     writer.close()
