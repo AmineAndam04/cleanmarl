@@ -316,7 +316,8 @@ if __name__ == "__main__":
 
                 q_values = torch.gather(
                     utility_network(batch_obs), dim=-1, index=batch_action.unsqueeze(-1)
-                ).squeeze()
+                )
+                q_values = q_values.reshape_as(q_next_max)
                 vdn_q_values = q_values.sum(dim=-1)
                 loss = F.mse_loss(targets, vdn_q_values)
                 optimizer.zero_grad()

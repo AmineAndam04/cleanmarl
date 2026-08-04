@@ -410,25 +410,37 @@ if __name__ == "__main__":
                 h_target = None
                 h_utility = None
                 with torch.no_grad():
-                    target_burn_in = batch_next_obs[:, : args.burn_in, :].reshape(
-                        args.batch_size * env.n_agents, args.burn_in, -1
+                    target_burn_in = (
+                        batch_next_obs[:, : args.burn_in, :]
+                        .transpose(1, 2)
+                        .reshape(args.batch_size * env.n_agents, args.burn_in, -1)
                     )
-                    utility_burn_in = batch_obs[:, : args.burn_in, :].reshape(
-                        args.batch_size * env.n_agents, args.burn_in, -1
+                    utility_burn_in = (
+                        batch_obs[:, : args.burn_in, :]
+                        .transpose(1, 2)
+                        .reshape(args.batch_size * env.n_agents, args.burn_in, -1)
                     )
                     _, h_target = target_network(target_burn_in, h=h_target)
                     _, h_utility = utility_network(utility_burn_in, h=h_utility)
 
                 with torch.no_grad():
-                    obs_target_seq = batch_next_obs[:, args.burn_in :, :].reshape(
-                        args.batch_size * env.n_agents,
-                        args.seq_length - args.burn_in,
-                        -1,
+                    obs_target_seq = (
+                        batch_next_obs[:, args.burn_in :, :]
+                        .transpose(1, 2)
+                        .reshape(
+                            args.batch_size * env.n_agents,
+                            args.seq_length - args.burn_in,
+                            -1,
+                        )
                     )
-                    avail_target_seq = batch_next_avail_action[:, args.burn_in :, :].reshape(
-                        args.batch_size * env.n_agents,
-                        args.seq_length - args.burn_in,
-                        -1,
+                    avail_target_seq = (
+                        batch_next_avail_action[:, args.burn_in :, :]
+                        .transpose(1, 2)
+                        .reshape(
+                            args.batch_size * env.n_agents,
+                            args.seq_length - args.burn_in,
+                            -1,
+                        )
                     )
                     q_next, h_target = target_network(
                         obs_target_seq,
@@ -437,10 +449,10 @@ if __name__ == "__main__":
                     )
                     q_next = q_next.reshape(
                         args.batch_size,
-                        args.seq_length - args.burn_in,
                         env.n_agents,
+                        args.seq_length - args.burn_in,
                         -1,
-                    )
+                    ).transpose(1, 2)
                     q_next_max, _ = q_next.max(dim=-1)
                     vdn_q_max = q_next_max.sum(dim=-1)
                     targets = (
@@ -448,23 +460,28 @@ if __name__ == "__main__":
                         + args.gamma * (1 - batch_done[:, args.burn_in :]) * vdn_q_max
                     )
 
-                batch_obs_t = batch_obs[:, args.burn_in :, :].reshape(
-                    args.batch_size * env.n_agents,
-                    args.seq_length - args.burn_in,
-                    -1,
+                batch_obs_t = (
+                    batch_obs[:, args.burn_in :, :]
+                    .transpose(1, 2)
+                    .reshape(
+                        args.batch_size * env.n_agents,
+                        args.seq_length - args.burn_in,
+                        -1,
+                    )
                 )
                 q_values, h_utility = utility_network(batch_obs_t, h=h_utility)
                 q_values = q_values.reshape(
                     args.batch_size,
-                    args.seq_length - args.burn_in,
                     env.n_agents,
+                    args.seq_length - args.burn_in,
                     -1,
-                )
+                ).transpose(1, 2)
                 q_values = torch.gather(
                     q_values,
                     dim=-1,
                     index=batch_action[:, args.burn_in :, :].unsqueeze(-1),
-                ).squeeze()
+                )
+                q_values = q_values.reshape_as(q_next_max)
                 vqn_q_values = q_values.sum(dim=-1)
                 loss = F.mse_loss(targets, vqn_q_values)
                 optimizer.zero_grad()

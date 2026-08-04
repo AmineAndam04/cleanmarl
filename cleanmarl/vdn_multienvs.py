@@ -434,7 +434,8 @@ if __name__ == "__main__":
                 targets = batch_reward + args.gamma * (1 - batch_done) * vdn_q_max
                 q_values = torch.gather(
                     utility_network(batch_obs), dim=-1, index=batch_action.unsqueeze(-1)
-                ).squeeze()
+                )
+                q_values = q_values.reshape_as(q_next_max)
                 vqn_q_values = q_values.sum(dim=-1)
                 loss = F.mse_loss(targets, vqn_q_values)
                 optimizer.zero_grad()
