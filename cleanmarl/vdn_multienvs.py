@@ -436,8 +436,8 @@ if __name__ == "__main__":
                     utility_network(batch_obs), dim=-1, index=batch_action.unsqueeze(-1)
                 )
                 q_values = q_values.reshape_as(q_next_max)
-                vqn_q_values = q_values.sum(dim=-1)
-                loss = F.mse_loss(targets, vqn_q_values)
+                vdn_q_values = q_values.sum(dim=-1)
+                loss = F.mse_loss(targets, vdn_q_values)
                 optimizer.zero_grad()
                 loss.backward()
                 grads = [p.grad for p in utility_network.parameters()]

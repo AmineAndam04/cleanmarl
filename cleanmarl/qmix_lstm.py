@@ -468,7 +468,7 @@ if __name__ == "__main__":
                     optimizer.step()
                     h_utility = (h_utility[0].detach(), h_utility[1].detach())
                     losses.append(loss.item())
-                    gradients.append(loss_gradients)
+                    gradients.append(loss_gradients.item())
 
             if num_episodes % args.target_network_update_freq == 0:
                 soft_update(
@@ -526,7 +526,7 @@ if __name__ == "__main__":
             if args.env_type == "smaclite":
                 writer.add_scalar(
                     "eval/battle_won",
-                    np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])),
+                    np.mean([info["battle_won"] for info in eval_ep_stats]),
                     step,
                 )
 

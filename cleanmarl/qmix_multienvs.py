@@ -197,7 +197,7 @@ class ReplayBuffer:
         )
         states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
         next_states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
-        done = torch.zeros((batch_size, max_length)).to(self.device)
+        done = torch.ones((batch_size, max_length)).to(self.device)
         mask = torch.zeros(batch_size, max_length, dtype=torch.bool).to(self.device)
         for i in range(batch_size):
             length = lengths[i]
@@ -212,8 +212,8 @@ class ReplayBuffer:
             mask[i, :length] = 1
 
         if self.normalize_reward:
-            mu = np.mean(reward[mask])
-            std = np.std(reward[mask])
+            mu = reward[mask].mean()
+            std = reward[mask].std()
             reward[mask.bool()] = (reward[mask] - mu) / (std + 1e-6)
 
         return Batch(
@@ -624,7 +624,7 @@ if __name__ == "__main__":
             if args.env_type == "smaclite":
                 writer.add_scalar(
                     "eval/battle_won",
-                    np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])),
+                    np.mean([info["battle_won"] for info in eval_ep_stats]),
                     step,
                 )
     if args.save_model:
