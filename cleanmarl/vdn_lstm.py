@@ -75,6 +75,8 @@ class Args:
     """ Folder to save logs, weights..."""
     save_model: bool = False
     """ If True, save the weights of the agents and hyperparameters"""
+    exp_name: str = "v1"
+    """ Used for logging"""
     log_every: int = 10
     """ Logging steps"""
     eval_steps: int = 10000
@@ -262,7 +264,7 @@ if __name__ == "__main__":
         device=device,
     )
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
         import wandb
 
@@ -499,7 +501,9 @@ if __name__ == "__main__":
                 )
             ep_rewards, ep_lengths, ep_stats = [], [], []
             losses, gradients = [], []
-        if step % args.eval_steps == 0 and step > args.learning_starts:
+        if (step % args.eval_steps == 0 and step > args.learning_starts) or (
+            step >= args.total_timesteps - 1
+        ):
             eval_obs, _ = eval_env.reset()
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
             eval_ep, current_reward, current_ep_length = 0, 0, 0

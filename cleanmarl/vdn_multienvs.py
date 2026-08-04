@@ -74,6 +74,8 @@ class Args:
     """ Folder to save logs, weights..."""
     save_model: bool = False
     """ If True, save the weights of the agents and hyperparameters"""
+    exp_name: str = "v1"
+    """ Used for logging"""
     log_every: int = 10
     """ Logging steps"""
     eval_steps: int = 5000
@@ -328,7 +330,7 @@ if __name__ == "__main__":
     )
 
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
         import wandb
 
@@ -414,37 +416,38 @@ if __name__ == "__main__":
                 ep_reward[i] = 0
                 ep_length[i] = 0
 
-        if step > args.learning_starts and step % (args.train_freq * args.num_envs) == 0:
-            (
-                batch_obs,
-                batch_action,
-                batch_reward,
-                batch_next_obs,
-                batch_next_avail_action,
-                batch_done,
-            ) = rb.sample(args.batch_size)
-            with torch.no_grad():
-                q_next_max, _ = target_network(
-                    batch_next_obs, avail_action=batch_next_avail_action
-                ).max(dim=-1)
-            vdn_q_max = q_next_max.sum(dim=-1)
-            targets = batch_reward + args.gamma * (1 - batch_done) * vdn_q_max
-            q_values = torch.gather(
-                utility_network(batch_obs), dim=-1, index=batch_action.unsqueeze(-1)
-            ).squeeze()
-            vqn_q_values = q_values.sum(dim=-1)
-            loss = F.mse_loss(targets, vqn_q_values)
-            optimizer.zero_grad()
-            loss.backward()
-            grads = [p.grad for p in utility_network.parameters()]
-            vdn_gradients = norm_d(grads, 2)
-            if args.clip_gradients > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    utility_network.parameters(), max_norm=args.clip_gradients
-                )
-            optimizer.step()
-            losses.append(loss.item())
-            gradients.append(vdn_gradients.item())
+        if step > args.learning_starts:
+            if step % (args.train_freq * args.num_envs) == 0:
+                (
+                    batch_obs,
+                    batch_action,
+                    batch_reward,
+                    batch_next_obs,
+                    batch_next_avail_action,
+                    batch_done,
+                ) = rb.sample(args.batch_size)
+                with torch.no_grad():
+                    q_next_max, _ = target_network(
+                        batch_next_obs, avail_action=batch_next_avail_action
+                    ).max(dim=-1)
+                vdn_q_max = q_next_max.sum(dim=-1)
+                targets = batch_reward + args.gamma * (1 - batch_done) * vdn_q_max
+                q_values = torch.gather(
+                    utility_network(batch_obs), dim=-1, index=batch_action.unsqueeze(-1)
+                ).squeeze()
+                vqn_q_values = q_values.sum(dim=-1)
+                loss = F.mse_loss(targets, vqn_q_values)
+                optimizer.zero_grad()
+                loss.backward()
+                grads = [p.grad for p in utility_network.parameters()]
+                vdn_gradients = norm_d(grads, 2)
+                if args.clip_gradients > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        utility_network.parameters(), max_norm=args.clip_gradients
+                    )
+                optimizer.step()
+                losses.append(loss.item())
+                gradients.append(vdn_gradients.item())
 
             if step % (args.target_network_update_freq * args.num_envs) == 0:
                 soft_update(
@@ -469,7 +472,9 @@ if __name__ == "__main__":
             ep_rewards, ep_lengths, ep_stats = [], [], []
             losses, gradients = [], []
 
-        if step > 0 and step % (args.eval_steps * args.num_envs) == 0:
+        if (step > 0 and step % (args.eval_steps * args.num_envs) == 0) or (
+            step >= args.total_timesteps - 1
+        ):
             eval_obs, _ = eval_env.reset()
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
             eval_ep, current_reward, current_ep_length = 0, 0, 0
