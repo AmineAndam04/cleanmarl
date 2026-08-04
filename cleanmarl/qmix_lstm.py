@@ -1,22 +1,24 @@
 import copy
+import datetime
+import random
+from dataclasses import dataclass
 from typing import NamedTuple
+
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-import numpy as np
-from dataclasses import dataclass
 import tyro
-import random
+from env.lbf_wrapper import LBFWrapper
 from env.pettingzoo_wrapper import PettingZooWrapper
 from env.smaclite_wrapper import SMACliteWrapper
-from cleanmarl.env.lbf_wrapper import LBFWrapper
-import torch.nn.functional as F
-import datetime
 from torch.utils.tensorboard import SummaryWriter
 
 
 @dataclass
 class Args:
+    # Environment
     env_type: str = "smaclite"  # "pz"
     """ pz(for Pettingzoo), smaclite (for SMAClite), lbf (for LBF) ... """
     env_name: str = "3m"  # "simple_spread_v3" #"pursuit_v4"
@@ -25,32 +27,30 @@ class Args:
     """ Env family when using pz"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
-    buffer_size: int = 5000
-    """ The number of episodes in the replay buffer"""
-    total_timesteps: int = 1000000
-    """ Total steps in the environment during training"""
-    gamma: float = 0.99
-    """ Discount factor"""
-    train_freq: int = 1
-    """ Train the network each «train_freq» step in the environment"""
-    optimizer: str = "Adam"
-    """ The optimizer"""
-    learning_rate: float = 0.0008
-    """ Learning rate"""
-    batch_size: int = 3
-    """ Batch size"""
-    start_e: float = 1
-    """ The starting value of epsilon, for exploration"""
-    end_e: float = 0.05
-    """ The end value of epsilon, for exploration"""
-    exploration_fraction: float = 0.05
-    """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
+    # Network
     hidden_dim: int = 32
     """ Hidden dimension"""
     hyper_dim: int = 32
     """ Hidden dimension of hyper-network"""
     num_layers: int = 1
     """ Number of layers"""
+    # Training
+    total_timesteps: int = 1000000
+    """ Total steps in the environment during training"""
+    train_freq: int = 1
+    """ Train the network each «train_freq» step in the environment"""
+    buffer_size: int = 5000
+    """ The number of episodes in the replay buffer"""
+    batch_size: int = 3
+    """ Batch size"""
+    tbptt: int = 10
+    """Chunck size for Truncated Backpropagation Through Time tbptt"""
+    gamma: float = 0.99
+    """ Discount factor"""
+    optimizer: str = "Adam"
+    """ The optimizer"""
+    learning_rate: float = 0.0008
+    """ Learning rate"""
     target_network_update_freq: int = 1
     """ Update the target network each target_network_update_freq» step in the environment"""
     polyak: float = 0.005
@@ -59,8 +59,23 @@ class Args:
     """ Normalize the rewards if True"""
     clip_gradients: float = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
-    tbptt: int = 10
-    """Chunck size for Truncated Backpropagation Through Time tbptt"""
+    start_e: float = 1
+    """ The starting value of epsilon, for exploration"""
+    end_e: float = 0.05
+    """ The end value of epsilon, for exploration"""
+    exploration_fraction: float = 0.05
+    """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
+    device: str = "cpu"
+    """ Device (cpu, cuda, mps)"""
+    seed: int = 1
+    """ Random seed"""
+    # Logging
+    work_dir: str = "runs"
+    """ Folder to save logs, weights ..."""
+    save_model: bool = False
+    """ If True, save the weights of the agents and hyperparameters"""
+    exp_name: str = "v1"
+    """ Used for logging"""
     log_every: int = 10
     """ Log rollout stats every <log_every> episode """
     eval_steps: int = 50
@@ -73,12 +88,6 @@ class Args:
     """ Weights & Biases project name"""
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
-    save_model: bool = True
-    """ If True, save the weights of the agents and hyperparameters"""
-    device: str = "cpu"
-    """ Device (cpu, cuda, mps)"""
-    seed: int = 1
-    """ Random seed"""
 
 
 class Qnetwrok(nn.Module):
@@ -273,6 +282,10 @@ if __name__ == "__main__":
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available() and args.device == "cuda":
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    # Set device
     device = torch.device(args.device)
     ## import the environment
     kwargs = {}  # {"render_mode":'human',"shared_reward":False}
@@ -321,7 +334,7 @@ if __name__ == "__main__":
     )
 
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
         import wandb
 
@@ -332,17 +345,16 @@ if __name__ == "__main__":
             config=vars(args),
             name=f"QMIX-lstm-{run_name}",
         )
-    writer = SummaryWriter(f"runs/QMIX-lstm-{run_name}")
+    writer = SummaryWriter(f"{args.work_dir}/QMIX-lstm-{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s"
-        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n{}".format(
+            "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
+        ),
     )
-    ep_rewards = []
-    ep_lengths = []
-    ep_stats = []
-    num_episode = 0
-    num_updates = 0
+    ep_rewards, ep_lengths, ep_stats = [], [], []
+    losses, gradients = [], []
+    num_episodes = 0
     step = 0
     while step < args.total_timesteps:
         episode = {
@@ -397,19 +409,16 @@ if __name__ == "__main__":
         episode["obs"].append(obs)
         episode["states"].append(state)
         rb.store(episode)
-        num_episode += 1
+        num_episodes += 1
         ep_rewards.append(ep_reward)
         ep_lengths.append(ep_length)
         if args.env_type == "smaclite":
             ep_stats.append(infos)  ## Add battle won for smaclite
 
-        if num_episode > args.batch_size:
-            if num_episode % args.train_freq == 0:
+        if num_episodes > args.batch_size:
+            if num_episodes % args.train_freq == 0:
                 batch = rb.sample(args.batch_size)
-                losses = []
-                gradients = []
-                h_target = None
-                h_utility = None
+                h_target, h_utility = None, None
                 for t in range(0, batch.batch_obs.size(1), args.tbptt):
                     (
                         mb_obs,
@@ -429,14 +438,16 @@ if __name__ == "__main__":
                             avail_action=mb_avail_action,
                         )
                         q_next_max, _ = q_next.max(dim=-1)
-                        q_next_max = q_next_max.reshape(args.batch_size, -1, env.n_agents)
+                        q_next_max = q_next_max.reshape(
+                            args.batch_size, env.n_agents, -1
+                        ).transpose(1, 2)
                         q_tot_target = target_mixer(Q=q_next_max, s=mb_next_states)
                         q_tot_target = q_tot_target.reshape(args.batch_size, -1)
                         targets = mb_reward + args.gamma * (1 - mb_done) * q_tot_target
 
                     q_values, h_utility = utility_network(mb_obs, h=h_utility)
                     q_values = torch.gather(q_values, dim=-1, index=mb_action.unsqueeze(-1))
-                    q_values = q_values.reshape(args.batch_size, -1, env.n_agents)
+                    q_values = q_values.reshape(args.batch_size, env.n_agents, -1).transpose(1, 2)
                     q_tot = mixer(Q=q_values, s=mb_states)
                     q_tot = q_tot.reshape(args.batch_size, -1)
                     loss = F.mse_loss(targets[mb_mask], q_tot[mb_mask])
@@ -449,60 +460,53 @@ if __name__ == "__main__":
                         ],
                         2,
                     )
-                    gradients.append(loss_gradients)
-                    losses.append(loss.item())
                     if args.clip_gradients > 0:
                         torch.nn.utils.clip_grad_norm_(
                             list(utility_network.parameters()) + list(mixer.parameters()),
                             args.clip_gradients,
                         )
                     optimizer.step()
-                    num_updates += 1
                     h_utility = (h_utility[0].detach(), h_utility[1].detach())
+                    losses.append(loss.item())
+                    gradients.append(loss_gradients)
 
-                writer.add_scalar("train/loss", np.mean(losses), step)
-                writer.add_scalar("train/grads", np.mean(gradients), step)
-                writer.add_scalar("train/num_updates", num_updates, step)
-
-            if num_episode % args.target_network_update_freq == 0:
+            if num_episodes % args.target_network_update_freq == 0:
                 soft_update(
                     target_net=target_network,
                     utility_net=utility_network,
                     polyak=args.polyak,
                 )
                 soft_update(target_net=target_mixer, utility_net=mixer, polyak=args.polyak)
-        if num_episode % args.log_every == 0:
+        if num_episodes % args.log_every == 0:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
             writer.add_scalar("rollout/epsilon", epsilon, step)
-            writer.add_scalar("rollout/num_episodes", num_episode, step)
             if args.env_type == "smaclite":
                 writer.add_scalar(
                     "rollout/battle_won",
                     np.mean([info["battle_won"] for info in ep_stats]),
                     step,
                 )
-            ep_rewards = []
-            ep_lengths = []
-            ep_stats = []
+            if len(losses) > 0:
+                writer.add_scalar("train/loss", np.mean(losses), step)
+                writer.add_scalar("train/grads", np.mean(gradients), step)
+            ep_rewards, ep_lengths, ep_stats = [], [], []
+            losses, gradients = [], []
 
-        if num_episode % args.eval_steps == 0:
+        if num_episodes % args.eval_steps == 0 or step >= args.total_timesteps - 1:
             eval_obs, _ = eval_env.reset()
-            eval_ep = 0
-            eval_ep_reward = []
-            eval_ep_length = []
-            eval_ep_stats = []
-            current_reward = 0
-            current_ep_length = 0
+            eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
+            eval_ep, current_reward, current_ep_length = 0, 0, 0
             h_eval = None
             while eval_ep < args.num_eval_ep:
-                q_values, h_eval = utility_network(
-                    torch.from_numpy(eval_obs).float().to(device),
-                    h=h_eval,
-                    avail_action=torch.tensor(eval_env.get_avail_actions(), dtype=torch.bool).to(
-                        device
-                    ),
-                )
+                with torch.no_grad():
+                    q_values, h_eval = utility_network(
+                        torch.from_numpy(eval_obs).float().to(device),
+                        h=h_eval,
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
+                        .bool()
+                        .to(device),
+                    )
                 actions = torch.argmax(q_values, dim=-1).reshape(eval_env.n_agents).cpu().numpy()
                 next_obs_, reward, done, truncated, infos = eval_env.step(actions)
                 current_reward += reward
@@ -514,8 +518,7 @@ if __name__ == "__main__":
                     eval_ep_reward.append(current_reward)
                     eval_ep_length.append(current_ep_length)
                     eval_ep_stats.append(infos)
-                    current_reward = 0
-                    current_ep_length = 0
+                    current_reward, current_ep_length = 0, 0
                     eval_ep += 1
             writer.add_scalar("eval/ep_reward", np.mean(eval_ep_reward), step)
             writer.add_scalar("eval/std_ep_reward", np.std(eval_ep_reward), step)
@@ -529,16 +532,16 @@ if __name__ == "__main__":
 
     if args.save_model:
         # Save the weights
-        qmix_model_path = f"runs/QMIX-lstm-{run_name}/agent.pt"
+        qmix_model_path = f"{args.work_dir}/QMIX-lstm-{run_name}/agent.pt"
         torch.save(utility_network.state_dict(), qmix_model_path)
-        mixer_model_path = f"runs/QMIX-lstm-{run_name}/mixer.pt"
+        mixer_model_path = f"{args.work_dir}/QMIX-lstm-{run_name}/mixer.pt"
         torch.save(mixer.state_dict(), mixer_model_path)
 
         # Save the args
         import json
         from dataclasses import asdict
 
-        qmix_args_path = f"runs/QMIX-lstm-{run_name}/args.json"
+        qmix_args_path = f"{args.work_dir}/QMIX-lstm-{run_name}/args.json"
         with open(qmix_args_path, "w") as f:
             json.dump(asdict(args), f, indent=2)
     writer.close()
