@@ -101,7 +101,9 @@ class Qnetwrok(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for i in range(num_layer):
-            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
+            self.layers.append(
+                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
+            )
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def forward(self, x, avail_action=None):
@@ -186,17 +188,21 @@ class ReplayBuffer:
         batch = [self.episodes[i] for i in indices]
         lengths = [len(episode["obs"]) - 1 for episode in batch]
         max_length = max(lengths)
-        obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(self.device)
+        obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(
+            self.device
+        )
         avail_actions = torch.zeros(
             (batch_size, max_length, self.num_agents, self.action_space)
         ).to(self.device)
         actions = torch.zeros((batch_size, max_length, self.num_agents)).to(self.device)
         reward = torch.zeros((batch_size, max_length)).to(self.device)
-        next_obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(
+        next_obs = torch.zeros(
+            (batch_size, max_length, self.num_agents, self.obs_space)
+        ).to(self.device)
+        states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
+        next_states = torch.zeros((batch_size, max_length, self.state_space)).to(
             self.device
         )
-        states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
-        next_states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
         done = torch.ones((batch_size, max_length)).to(self.device)
         mask = torch.zeros(batch_size, max_length, dtype=torch.bool).to(self.device)
         for i in range(batch_size):
@@ -236,7 +242,9 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
 
 def environment(env_type, env_name, env_family, agent_ids, kwargs):
     if env_type == "pz":
-        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
+        env = PettingZooWrapper(
+            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
+        )
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -253,7 +261,9 @@ def norm_d(grads, d):
 
 def soft_update(target_net, utility_net, polyak):
     for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
-        target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
+        target_param.data.copy_(
+            polyak * param.data + (1.0 - polyak) * target_param.data
+        )
 
 
 def get_mini_batches(batch, t, minibatch_size):
@@ -360,7 +370,8 @@ if __name__ == "__main__":
         for _ in range(args.num_envs)
     ]
     processes = [
-        Process(target=env_worker, args=(env_conns[i], envs[i])) for i in range(args.num_envs)
+        Process(target=env_worker, args=(env_conns[i], envs[i]))
+        for i in range(args.num_envs)
     ]
     for process in processes:
         process.daemon = True
@@ -446,7 +457,9 @@ if __name__ == "__main__":
             qmix_conn.send(("reset", seed + i))
         contents = [qmix_conn.recv() for qmix_conn in qmix_conns]
         obs = np.stack([content["obs"] for content in contents], axis=0)
-        avail_action = np.stack([content["avail_actions"] for content in contents], axis=0)
+        avail_action = np.stack(
+            [content["avail_actions"] for content in contents], axis=0
+        )
         state = [content["state"] for content in contents]
         alive_envs = list(range(args.num_envs))
 
@@ -472,7 +485,9 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     q_values = utility_network(
                         torch.from_numpy(obs).float().to(device),
-                        avail_action=torch.tensor(avail_action, dtype=torch.bool).to(device),
+                        avail_action=torch.tensor(avail_action, dtype=torch.bool).to(
+                            device
+                        ),
                     )
                 actions = torch.argmax(q_values, dim=-1).cpu().numpy()
             # Send actions
@@ -549,26 +564,36 @@ if __name__ == "__main__":
                             ).max(dim=-1)
                             q_tot_target = target_mixer(Q=q_next_max, s=mb_next_states)
                             q_tot_target = q_tot_target.reshape(args.batch_size, -1)
-                            targets = mb_reward + args.gamma * (1 - mb_done) * q_tot_target
+                            targets = (
+                                mb_reward + args.gamma * (1 - mb_done) * q_tot_target
+                            )
 
                         q_values = torch.gather(
-                            utility_network(mb_obs), dim=-1, index=mb_action.unsqueeze(-1)
+                            utility_network(mb_obs),
+                            dim=-1,
+                            index=mb_action.unsqueeze(-1),
                         )
-                        q_values = q_values.reshape(args.batch_size, -1, eval_env.n_agents)
+                        q_values = q_values.reshape(
+                            args.batch_size, -1, eval_env.n_agents
+                        )
                         q_tot = mixer(Q=q_values, s=mb_states).squeeze()
                         q_tot = q_tot.reshape(args.batch_size, -1)
-                        loss += F.mse_loss(targets[mb_mask], q_tot[mb_mask]) * mb_mask.sum()
+                        loss += (
+                            F.mse_loss(targets[mb_mask], q_tot[mb_mask]) * mb_mask.sum()
+                        )
                     loss /= batch.batch_mask.sum()
                     optimizer.zero_grad()
                     loss.backward()
                     grads = [
                         p.grad
-                        for p in list(utility_network.parameters()) + list(mixer.parameters())
+                        for p in list(utility_network.parameters())
+                        + list(mixer.parameters())
                     ]
                     qmix_gradient = norm_d(grads, 2)
                     if args.clip_gradients > 0:
                         torch.nn.utils.clip_grad_norm_(
-                            list(utility_network.parameters()) + list(mixer.parameters()),
+                            list(utility_network.parameters())
+                            + list(mixer.parameters()),
                             args.clip_gradients,
                         )
                     optimizer.step()
@@ -581,7 +606,9 @@ if __name__ == "__main__":
                     utility_net=utility_network,
                     polyak=args.polyak,
                 )
-                soft_update(target_net=target_mixer, utility_net=mixer, polyak=args.polyak)
+                soft_update(
+                    target_net=target_mixer, utility_net=mixer, polyak=args.polyak
+                )
         if (num_episodes // args.num_envs) % args.log_every == 0:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
