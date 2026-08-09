@@ -396,13 +396,7 @@ if __name__ == "__main__":
         device=device,
     )
     ep_rewards, ep_lengths, ep_stats = [], [], []
-    cr_losses, ac_losses, entropies, actor_gradients, critic_gradients = (
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
+    cr_losses, ac_losses, entropies, ac_gradients, cr_gradients = [], [], [], [], []
     step = 0
     training_step = 0
     while step < args.total_timesteps:
@@ -558,7 +552,7 @@ if __name__ == "__main__":
         critic_optimizer.step()
         training_step += 1
         cr_losses.append(cr_loss.item())
-        critic_gradients.append(critic_gradient.item())
+        cr_gradients.append(critic_gradient.item())
         # Update target critic
         if training_step % args.target_network_update_freq == 0:
             soft_update(target_net=target_critic, critic_net=critic, polyak=args.polyak)
@@ -608,7 +602,7 @@ if __name__ == "__main__":
         actor_optimizer.step()
         entropies.append(entropy.item())
         ac_losses.append(ac_loss.item())
-        actor_gradients.append(actor_gradient.item())
+        ac_gradients.append(actor_gradient.item())
 
         ## logging
         if len(ep_rewards) > args.log_every:
@@ -621,18 +615,14 @@ if __name__ == "__main__":
                     np.mean([info["battle_won"] for info in ep_stats]),
                     step,
                 )
+            ep_rewards, ep_lengths, ep_stats = [], [], []
             if len(ac_losses) > 0:
                 writer.add_scalar("train/critic_loss", np.mean(cr_losses), step)
                 writer.add_scalar("train/actor_loss", np.mean(ac_losses), step)
                 writer.add_scalar("train/entropy", np.mean(entropies), step)
-                writer.add_scalar(
-                    "train/actor_gradients", np.mean(actor_gradients), step
-                )
-                writer.add_scalar(
-                    "train/critic_gradients", np.mean(critic_gradients), step
-                )
-                ep_rewards, ep_lengths, ep_stats = [], [], []
-                cr_losses, ac_losses, entropies, actor_gradients, critic_gradients = (
+                writer.add_scalar("train/ac_gradients", np.mean(ac_gradients), step)
+                writer.add_scalar("train/cr_gradients", np.mean(cr_gradients), step)
+                cr_losses, ac_losses, entropies, ac_gradients, cr_gradients = (
                     [],
                     [],
                     [],
