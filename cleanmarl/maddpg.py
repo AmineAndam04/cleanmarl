@@ -534,9 +534,8 @@ if __name__ == "__main__":
 
         if num_episode % args.eval_steps == 0 or step >= args.total_timesteps - 1:
             eval_obs, _ = eval_env.reset()
-            eval_ep = 0
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
-            current_reward, current_ep_length = 0, 0
+            eval_ep, current_reward, current_ep_length = 0, 0, 0
             while eval_ep < args.num_eval_ep:
                 with torch.no_grad():
                     logits = actor.logits(
@@ -566,7 +565,7 @@ if __name__ == "__main__":
             if args.env_type == "smaclite":
                 writer.add_scalar(
                     "eval/battle_won",
-                    np.mean(np.mean([info["battle_won"] for info in eval_ep_stats])),
+                    np.mean([info["battle_won"] for info in eval_ep_stats]),
                     step,
                 )
     if args.save_model:
