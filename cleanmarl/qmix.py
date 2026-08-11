@@ -96,7 +96,9 @@ class Qnetwrok(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for _ in range(num_layer):
-            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
+            self.layers.append(
+                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
+            )
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def forward(self, x, avail_action=None):
@@ -181,17 +183,21 @@ class ReplayBuffer:
         batch = [self.episodes[i] for i in indices]
         lengths = [len(episode["obs"]) - 1 for episode in batch]
         max_length = max(lengths)
-        obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(self.device)
+        obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(
+            self.device
+        )
         avail_actions = torch.zeros(
             (batch_size, max_length, self.num_agents, self.action_space)
         ).to(self.device)
         actions = torch.zeros((batch_size, max_length, self.num_agents)).to(self.device)
         reward = torch.zeros((batch_size, max_length)).to(self.device)
-        next_obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(
+        next_obs = torch.zeros(
+            (batch_size, max_length, self.num_agents, self.obs_space)
+        ).to(self.device)
+        states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
+        next_states = torch.zeros((batch_size, max_length, self.state_space)).to(
             self.device
         )
-        states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
-        next_states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
         done = torch.ones((batch_size, max_length)).to(self.device)
         mask = torch.zeros(batch_size, max_length, dtype=torch.bool).to(self.device)
 
@@ -231,7 +237,9 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
 
 def environment(env_type, env_name, env_family, agent_ids, kwargs):
     if env_type == "pz":
-        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
+        env = PettingZooWrapper(
+            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
+        )
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -247,7 +255,9 @@ def norm_d(grads, d):
 
 def soft_update(target_net, utility_net, polyak):
     for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
-        target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
+        target_param.data.copy_(
+            polyak * param.data + (1.0 - polyak) * target_param.data
+        )
 
 
 def get_mini_batches(batch, t, minibatch_size):
@@ -376,9 +386,7 @@ if __name__ == "__main__":
                     )
                 actions = torch.argmax(q_values, dim=-1).cpu().numpy()
             next_obs, reward, done, truncated, infos = env.step(actions)
-            avail_action = (
-                env.get_avail_actions()
-            )  # Get the mask of 'next_obs' and store it in the replay, we need it for the bellman loss
+            avail_action = env.get_avail_actions()  # Get the mask of 'next_obs' and store it in the replay, we need it for the bellman loss
             next_state = env.get_state()
 
             ep_reward += reward
@@ -439,7 +447,9 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
                 loss.backward()
                 grads = [
-                    p.grad for p in list(utility_network.parameters()) + list(mixer.parameters())
+                    p.grad
+                    for p in list(utility_network.parameters())
+                    + list(mixer.parameters())
                 ]
                 qmix_gradient = norm_d(grads, 2)
                 if args.clip_gradients > 0:
@@ -457,7 +467,9 @@ if __name__ == "__main__":
                     utility_net=utility_network,
                     polyak=args.polyak,
                 )
-                soft_update(target_net=target_mixer, utility_net=mixer, polyak=args.polyak)
+                soft_update(
+                    target_net=target_mixer, utility_net=mixer, polyak=args.polyak
+                )
         if num_episodes % args.log_every == 0:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
