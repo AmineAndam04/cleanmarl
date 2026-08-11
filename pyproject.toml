@@ -47,5 +47,8 @@ include = ["cleanmarl*"]
 select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
 ignore = ["PLR0402","B905"]
 
+[tool.ruff]
+line-length = 110
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

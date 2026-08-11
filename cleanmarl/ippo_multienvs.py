@@ -121,23 +121,15 @@ class RolloutBuffer:
         self.pos = 0
         lengths = [len(episode["obs"]) for episode in self.episodes]
         max_length = max(lengths)
-        obs = torch.zeros(
-            (self.buffer_size, max_length, self.num_agents, self.obs_space)
-        ).to(self.device)
-        avail_actions = torch.zeros(
-            (self.buffer_size, max_length, self.num_agents, self.action_space)
-        ).to(self.device)
-        actions = torch.zeros((self.buffer_size, max_length, self.num_agents)).to(
+        obs = torch.zeros((self.buffer_size, max_length, self.num_agents, self.obs_space)).to(self.device)
+        avail_actions = torch.zeros((self.buffer_size, max_length, self.num_agents, self.action_space)).to(
             self.device
         )
-        log_probs = torch.zeros((self.buffer_size, max_length, self.num_agents)).to(
-            self.device
-        )
+        actions = torch.zeros((self.buffer_size, max_length, self.num_agents)).to(self.device)
+        log_probs = torch.zeros((self.buffer_size, max_length, self.num_agents)).to(self.device)
         reward = torch.zeros((self.buffer_size, max_length)).to(self.device)
         done = torch.ones((self.buffer_size, max_length)).to(self.device)
-        mask = torch.zeros(self.buffer_size, max_length, dtype=torch.bool).to(
-            self.device
-        )
+        mask = torch.zeros(self.buffer_size, max_length, dtype=torch.bool).to(self.device)
         for i in range(self.buffer_size):
             length = lengths[i]
             obs[i, :length] = self.episodes[i]["obs"]
@@ -168,9 +160,7 @@ class Actor(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for _ in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def act(self, x, avail_action=None):
@@ -200,9 +190,7 @@ class Critic(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for _ in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, 1)))
 
     def forward(self, x):
@@ -213,9 +201,7 @@ class Critic(nn.Module):
 
 def environment(env_type, env_name, env_family, agent_ids, kwargs):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -316,10 +302,7 @@ if __name__ == "__main__":
         )
         for _ in range(args.n_episodes)
     ]
-    processes = [
-        Process(target=env_worker, args=(env_conns[i], envs[i]))
-        for i in range(args.n_episodes)
-    ]
+    processes = [Process(target=env_worker, args=(env_conns[i], envs[i])) for i in range(args.n_episodes)]
     for process in processes:
         process.daemon = True
         process.start()
@@ -394,13 +377,11 @@ if __name__ == "__main__":
         ]
 
         for i, ippo_conn in enumerate(ippo_conns):
-            ippo_conn.send(("reset", seed))
+            ippo_conn.send(("reset", seed + i))
 
         contents = [ippo_conn.recv() for ippo_conn in ippo_conns]
         obs = np.stack([content["obs"] for content in contents], axis=0)
-        avail_action = np.stack(
-            [content["avail_actions"] for content in contents], axis=0
-        )
+        avail_action = np.stack([content["avail_actions"] for content in contents], axis=0)
         alive_envs = list(range(args.n_episodes))
         ep_reward, ep_length, ep_stat = (
             [0] * args.n_episodes,
@@ -477,16 +458,11 @@ if __name__ == "__main__":
                 next_value = critic(x=b_obs[ep_idx])
                 next_value[~b_mask[ep_idx]] = 0
                 ep_len = int(b_mask[ep_idx].sum().item())
-                next_value = torch.cat(
-                    (next_value, torch.zeros((1, eval_env.n_agents)))
-                )
+                next_value = torch.cat((next_value, torch.zeros((1, eval_env.n_agents))))
                 last_return_lambda = 0
                 for t in reversed(range(ep_len)):
-                    return_lambda[ep_idx, t] = last_return_lambda = b_reward[
-                        ep_idx, t
-                    ] + args.gamma * (
-                        args.td_lambda * last_return_lambda
-                        + (1 - args.td_lambda) * next_value[t + 1]
+                    return_lambda[ep_idx, t] = last_return_lambda = b_reward[ep_idx, t] + args.gamma * (
+                        args.td_lambda * last_return_lambda + (1 - args.td_lambda) * next_value[t + 1]
                     )
                     advantages[ep_idx, t] = return_lambda[ep_idx, t] - next_value[t]
         # training loop
@@ -502,9 +478,7 @@ if __name__ == "__main__":
         b_obs = b_obs[b_mask].reshape((-1, eval_env.get_obs_size()))
         b_actions = b_actions[b_mask].reshape(-1)
         b_log_probs = b_log_probs[b_mask].reshape(-1)
-        b_avail_actions = b_avail_actions[b_mask].reshape(
-            (-1, eval_env.get_action_size())
-        )
+        b_avail_actions = b_avail_actions[b_mask].reshape((-1, eval_env.get_action_size()))
         advantages = advantages[b_mask].reshape(-1)
         return_lambda = return_lambda[b_mask].reshape(-1)
         for _ in range(args.epochs):
@@ -526,9 +500,7 @@ if __name__ == "__main__":
                 ratio = torch.exp(log_ratio)
                 ## Compute PG the loss
                 pg_loss1 = advantages[start:end] * ratio
-                pg_loss2 = advantages[start:end] * torch.clamp(
-                    ratio, 1 - args.ppo_clip, 1 + args.ppo_clip
-                )
+                pg_loss2 = advantages[start:end] * torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip)
                 pg_loss = torch.min(pg_loss1, pg_loss2).sum()
                 # Compute entropy bonus
                 entropy_loss = entropy_loss.sum()
@@ -565,12 +537,8 @@ if __name__ == "__main__":
             critic_gradient = norm_d([p.grad for p in critic.parameters()], 2)
 
             if args.clip_gradients > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    actor.parameters(), max_norm=args.clip_gradients
-                )
-                torch.nn.utils.clip_grad_norm_(
-                    critic.parameters(), max_norm=args.clip_gradients
-                )
+                torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.clip_gradients)
+                torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=args.clip_gradients)
             actor_optimizer.step()
             critic_optimizer.step()
             ac_losses.append(actor_loss.item())
@@ -604,9 +572,7 @@ if __name__ == "__main__":
                 kl_div, clipped_ratios = [], []
             ep_rewards, ep_lengths, ep_stats = [], [], []
 
-        if (
-            num_episodes / args.n_episodes
-        ) % args.eval_steps == 0 or step >= args.total_timesteps - 1:
+        if (num_episodes / args.n_episodes) % args.eval_steps == 0 or step >= args.total_timesteps - 1:
             eval_obs, _ = eval_env.reset()
             eval_ep, current_reward, current_ep_length = 0, 0, 0
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
@@ -614,14 +580,10 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     logits = actor.logits(
                         torch.from_numpy(eval_obs).float().to(device),
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
-                        .bool()
-                        .to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
                     )
                     actions = logits.argmax(-1)
-                next_obs_, reward, done, truncated, infos = eval_env.step(
-                    actions.cpu().numpy()
-                )
+                next_obs_, reward, done, truncated, infos = eval_env.step(actions.cpu().numpy())
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_
