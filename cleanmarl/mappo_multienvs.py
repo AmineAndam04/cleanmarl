@@ -471,7 +471,7 @@ if __name__ == "__main__":
                 next_value = critic(x=b_states[ep_idx])
                 next_value[~b_mask[ep_idx]] = 0
                 ep_len = b_mask[ep_idx].sum()
-                next_value = torch.cat((next_value, torch.zeros((1,))))
+                next_value = torch.cat((next_value, torch.zeros((1,), device=device)))
                 last_return_lambda = 0
                 for t in reversed(range(ep_len)):
                     return_lambda[ep_idx, t] = last_return_lambda = b_reward[ep_idx, t] + args.gamma * (
