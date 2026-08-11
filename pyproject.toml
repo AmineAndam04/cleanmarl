@@ -46,6 +46,8 @@ include = ["cleanmarl*"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
 ignore = ["PLR0402","B905"]
+[tool.ruff.lint.pylint]
+max-args = 10
 
 [tool.ruff]
 line-length = 110

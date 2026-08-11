@@ -416,8 +416,7 @@ if __name__ == "__main__":
 
             step += len(alive_envs)
 
-            obs = []
-            avail_action = []
+            obs, avail_action = [], []
             for i, j in enumerate(alive_envs[:]):
                 if done[i] or truncated[i]:
                     alive_envs.remove(j)
@@ -452,7 +451,6 @@ if __name__ == "__main__":
         # Compute the advantage
         return_lambda = torch.zeros_like(b_actions).float().to(device)
         advantages = torch.zeros_like(b_actions).float().to(device)
-        # a Batched version
         with torch.no_grad():
             for ep_idx in range(return_lambda.size(0)):
                 next_value = critic(x=b_obs[ep_idx])

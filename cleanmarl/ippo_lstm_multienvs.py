@@ -434,7 +434,7 @@ if __name__ == "__main__":
                 ep_reward[j] += reward[i]
                 ep_length[j] += 1
             step += len(alive_envs)
-            obs, avail_action = []
+            obs, avail_action = [], []
             h_i = []
             for i, j in enumerate(alive_envs[:]):
                 if done[i] or truncated[i]:
@@ -468,24 +468,21 @@ if __name__ == "__main__":
             b_mask,
         ) = rb.get_batch()
         # Compute the advantage
-        #####  Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
-        #####  Compute the advantage using A(s,a) = λ-Returns -V(s), see page 47 in David Silver's lecture n 4 (https://davidstarsilver.wordpress.com/wp-content/uploads/2025/04/lecture-4-model-free-prediction-.pdf)
         return_lambda = torch.zeros_like(b_actions).float().to(device)
         advantages = torch.zeros_like(b_actions).float().to(device)
         with torch.no_grad():
             for ep_idx in range(return_lambda.size(0)):
+                next_value = critic(x=b_obs[ep_idx])
+                next_value[~b_mask[ep_idx]] = 0
                 ep_len = int(b_mask[ep_idx].sum().item())
+                next_value = torch.cat((next_value, torch.zeros((1, eval_env.n_agents))))
                 last_return_lambda = 0
                 for t in reversed(range(ep_len)):
-                    if t == (ep_len - 1):
-                        next_value = 0
-                    else:
-                        next_value = critic(x=b_obs[ep_idx, t + 1])
                     return_lambda[ep_idx, t] = last_return_lambda = b_reward[ep_idx, t] + args.gamma * (
-                        args.td_lambda * last_return_lambda + (1 - args.td_lambda) * next_value
+                        args.td_lambda * last_return_lambda + (1 - args.td_lambda) * next_value[t + 1]
                     )
-                    advantages[ep_idx, t] = return_lambda[ep_idx, t] - critic(x=b_obs[ep_idx, t])
-        # training loop)
+                    advantages[ep_idx, t] = return_lambda[ep_idx, t] - next_value[t]
+        # training loop
         if args.normalize_advantage:
             advantages = (advantages - advantages[b_mask].mean()) / (advantages[b_mask].std() + 1e-8)
         if args.normalize_return:
