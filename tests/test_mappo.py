@@ -5,37 +5,42 @@ import sys
 import torch
 
 
-def test_vdn(tmp_path):
+def test_mappo(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn.py",
+            "cleanmarl/mappo.py",
             "--env_type=smaclite",
             "--env_name=3m",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
+            "--n_episodes=2",
             "--eval-steps=100",
             "--save_model",
             f"--work_dir={tmp_path}",
         ],
         check=True,
     )
-    run_dirs = list(tmp_path.glob("VDN-*"))
+    run_dirs = list(tmp_path.glob("MAPPO-*"))
     assert len(run_dirs) == 1
 
     run_dir = run_dirs[0]
-    checkpoint_path = run_dir / "agent.pt"
+    checkpoint_path = run_dir / "actor.pt"
+    checkpoint_path2 = run_dir / "critic.pt"
     args_path = run_dir / "args.json"
 
     assert checkpoint_path.is_file()
     assert checkpoint_path.stat().st_size > 0
+    assert checkpoint_path2.stat().st_size > 0
     assert args_path.is_file()
 
-    # Verify that agent.pt is a readable PyTorch state dict.
+    # Verify that actor.pt is a readable PyTorch state dict.
     state_dict = torch.load(
         checkpoint_path,
+        map_location="cpu",
+        weights_only=True,
+    )
+    state_dict = torch.load(
+        checkpoint_path2,
         map_location="cpu",
         weights_only=True,
     )
@@ -50,17 +55,15 @@ def test_vdn(tmp_path):
     assert saved_args["total_timesteps"] == 1000
 
 
-def test_vdn_cuda(tmp_path):
+def test_mappo_cuda(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn.py",
+            "cleanmarl/mappo.py",
             "--env_type=smaclite",
             "--env_name=3m",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
+            "--n_episodes=2",
             "--eval-steps=100",
             "--device=cuda",
             f"--work_dir={tmp_path}",
@@ -69,17 +72,15 @@ def test_vdn_cuda(tmp_path):
     )
 
 
-def test_vdn_lbf(tmp_path):
+def test_mappo_lbf(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn.py",
+            "cleanmarl/mappo.py",
             "--env_type=lbf",
             "--env_name=Foraging-2s-10x10-4p-2f-v3",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
+            "--n_episodes=2",
             "--eval-steps=100",
             f"--work_dir={tmp_path}",
         ],
@@ -87,17 +88,15 @@ def test_vdn_lbf(tmp_path):
     )
 
 
-def test_vdn_pz(tmp_path):
+def test_mappo_pz(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn.py",
+            "cleanmarl/mappo.py",
             "--env_type=pz",
             "--env_name=simple_spread_v3",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
+            "--n_episodes=2",
             "--eval-steps=100",
             f"--work_dir={tmp_path}",
         ],
@@ -105,38 +104,43 @@ def test_vdn_pz(tmp_path):
     )
 
 
-def test_vdn_lstm(tmp_path):
+def test_mappo_lstm(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn_lstm.py",
+            "cleanmarl/mappo_lstm.py",
             "--env_type=smaclite",
             "--env_name=3m",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
-            "--seq_length=3",
+            "--n_episodes=2",
+            "--tbptt=3",
             "--eval-steps=100",
             "--save_model",
             f"--work_dir={tmp_path}",
         ],
         check=True,
     )
-    run_dirs = list(tmp_path.glob("VDN-*"))
+    run_dirs = list(tmp_path.glob("MAPPO-*"))
     assert len(run_dirs) == 1
 
     run_dir = run_dirs[0]
-    checkpoint_path = run_dir / "agent.pt"
+    checkpoint_path = run_dir / "actor.pt"
+    checkpoint_path2 = run_dir / "critic.pt"
     args_path = run_dir / "args.json"
 
     assert checkpoint_path.is_file()
     assert checkpoint_path.stat().st_size > 0
+    assert checkpoint_path2.stat().st_size > 0
     assert args_path.is_file()
 
-    # Verify that agent.pt is a readable PyTorch state dict.
+    # Verify that actor.pt is a readable PyTorch state dict.
     state_dict = torch.load(
         checkpoint_path,
+        map_location="cpu",
+        weights_only=True,
+    )
+    state_dict = torch.load(
+        checkpoint_path2,
         map_location="cpu",
         weights_only=True,
     )
@@ -151,19 +155,17 @@ def test_vdn_lstm(tmp_path):
     assert saved_args["total_timesteps"] == 1000
 
 
-def test_vdn_lstm_cuda(tmp_path):
+def test_mappo_lstm_cuda(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn_lstm.py",
+            "cleanmarl/mappo_lstm.py",
             "--env_type=smaclite",
             "--env_name=3m",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
+            "--n_episodes=2",
             "--eval-steps=100",
-            "--seq_length=3",
+            "--tbptt=3",
             "--device=cuda",
             f"--work_dir={tmp_path}",
         ],
@@ -171,18 +173,16 @@ def test_vdn_lstm_cuda(tmp_path):
     )
 
 
-def test_vdn_lstm_lbf(tmp_path):
+def test_mappo_lstm_lbf(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn_lstm.py",
+            "cleanmarl/mappo_lstm.py",
             "--env_type=lbf",
             "--env_name=Foraging-2s-10x10-4p-2f-v3",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
-            "--seq_length=3",
+            "--n_episodes=2",
+            "--tbptt=3",
             "--eval-steps=100",
             f"--work_dir={tmp_path}",
         ],
@@ -190,18 +190,16 @@ def test_vdn_lstm_lbf(tmp_path):
     )
 
 
-def test_vdn_lstm_pz(tmp_path):
+def test_mappo_lstm_pz(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn_lstm.py",
+            "cleanmarl/mappo_lstm.py",
             "--env_type=pz",
             "--env_name=simple_spread_v3",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
-            "--seq_length=3",
+            "--n_episodes=2",
+            "--tbptt=3",
             "--eval-steps=100",
             f"--work_dir={tmp_path}",
         ],
@@ -209,37 +207,42 @@ def test_vdn_lstm_pz(tmp_path):
     )
 
 
-def test_vdn_multienv(tmp_path):
+def test_mappo_multienv(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn_multienvs.py",
+            "cleanmarl/mappo_multienvs.py",
             "--env_type=smaclite",
             "--env_name=3m",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
+            "--n_episodes=2",
             "--eval-steps=100",
             "--save_model",
             f"--work_dir={tmp_path}",
         ],
         check=True,
     )
-    run_dirs = list(tmp_path.glob("VDN-*"))
+    run_dirs = list(tmp_path.glob("MAPPO-*"))
     assert len(run_dirs) == 1
 
     run_dir = run_dirs[0]
-    checkpoint_path = run_dir / "agent.pt"
+    checkpoint_path = run_dir / "actor.pt"
+    checkpoint_path2 = run_dir / "critic.pt"
     args_path = run_dir / "args.json"
 
     assert checkpoint_path.is_file()
     assert checkpoint_path.stat().st_size > 0
+    assert checkpoint_path2.stat().st_size > 0
     assert args_path.is_file()
 
-    # Verify that agent.pt is a readable PyTorch state dict.
+    # Verify that actor.pt is a readable PyTorch state dict.
     state_dict = torch.load(
         checkpoint_path,
+        map_location="cpu",
+        weights_only=True,
+    )
+    state_dict = torch.load(
+        checkpoint_path2,
         map_location="cpu",
         weights_only=True,
     )
@@ -254,17 +257,15 @@ def test_vdn_multienv(tmp_path):
     assert saved_args["total_timesteps"] == 1000
 
 
-def test_vdn_multienv_cuda(tmp_path):
+def test_mappo_multienv_cuda(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn_multienvs.py",
+            "cleanmarl/mappo_multienvs.py",
             "--env_type=smaclite",
             "--env_name=3m",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
+            "--n_episodes=2",
             "--eval-steps=100",
             "--device=cuda",
             f"--work_dir={tmp_path}",
@@ -273,17 +274,118 @@ def test_vdn_multienv_cuda(tmp_path):
     )
 
 
-def test_vdn_multienv_lbf(tmp_path):
+def test_mappo_multienv_lbf(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "cleanmarl/vdn_multienvs.py",
+            "cleanmarl/mappo_multienvs.py",
             "--env_type=lbf",
             "--env_name=Foraging-2s-10x10-4p-2f-v3",
             "--total-timesteps=1000",
-            "--learning-starts=10",
-            "--buffer-size=100",
-            "--batch-size=4",
+            "--n_episodes=2",
+            "--eval-steps=100",
+            f"--work_dir={tmp_path}",
+        ],
+        check=True,
+    )
+
+
+def test_mappo_lstm_multienvs(tmp_path):
+    subprocess.run(
+        [
+            sys.executable,
+            "cleanmarl/mappo_lstm_multienvs.py",
+            "--env_type=smaclite",
+            "--env_name=3m",
+            "--total-timesteps=1000",
+            "--n_episodes=2",
+            "--tbptt=3",
+            "--eval-steps=100",
+            "--save_model",
+            f"--work_dir={tmp_path}",
+        ],
+        check=True,
+    )
+    run_dirs = list(tmp_path.glob("MAPPO-*"))
+    assert len(run_dirs) == 1
+
+    run_dir = run_dirs[0]
+    checkpoint_path = run_dir / "actor.pt"
+    checkpoint_path2 = run_dir / "critic.pt"
+    args_path = run_dir / "args.json"
+
+    assert checkpoint_path.is_file()
+    assert checkpoint_path.stat().st_size > 0
+    assert checkpoint_path2.stat().st_size > 0
+    assert args_path.is_file()
+
+    # Verify that actor.pt is a readable PyTorch state dict.
+    state_dict = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=True,
+    )
+    state_dict = torch.load(
+        checkpoint_path2,
+        map_location="cpu",
+        weights_only=True,
+    )
+    assert state_dict
+    assert all(isinstance(value, torch.Tensor) for value in state_dict.values())
+
+    # Verify the saved configuration.
+    saved_args = json.loads(args_path.read_text())
+    assert saved_args["save_model"] is True
+    assert saved_args["env_type"] == "smaclite"
+    assert saved_args["env_name"] == "3m"
+    assert saved_args["total_timesteps"] == 1000
+
+
+def test_mappo_lstm_multienvs_cuda(tmp_path):
+    subprocess.run(
+        [
+            sys.executable,
+            "cleanmarl/mappo_lstm_multienvs.py",
+            "--env_type=smaclite",
+            "--env_name=3m",
+            "--total-timesteps=1000",
+            "--n_episodes=2",
+            "--eval-steps=100",
+            "--tbptt=3",
+            "--device=cuda",
+            f"--work_dir={tmp_path}",
+        ],
+        check=True,
+    )
+
+
+def test_mappo_lstm_multienvs_lbf(tmp_path):
+    subprocess.run(
+        [
+            sys.executable,
+            "cleanmarl/mappo_lstm_multienvs.py",
+            "--env_type=lbf",
+            "--env_name=Foraging-2s-10x10-4p-2f-v3",
+            "--total-timesteps=1000",
+            "--n_episodes=2",
+            "--tbptt=3",
+            "--eval-steps=100",
+            f"--work_dir={tmp_path}",
+        ],
+        check=True,
+    )
+
+
+def test_mappo_lstm_multienvs_pz(tmp_path):
+    subprocess.run(
+        [
+            sys.executable,
+            "cleanmarl/mappo_lstm_multienvs.py",
+            "--env_type=pz",
+            "--env_name=simple_spread_v3",
+            "--total-timesteps=1000",
+            "--n_episodes=2",
+            "--tbptt=3",
             "--eval-steps=100",
             f"--work_dir={tmp_path}",
         ],

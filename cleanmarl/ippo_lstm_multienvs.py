@@ -605,16 +605,16 @@ if __name__ == "__main__":
                 )
     if args.save_model:
         # Save the weights
-        actor_model_path = f"{args.work_dir}/IPPO-lstm-multienvs{run_name}/actor.pt"
+        actor_model_path = f"{args.work_dir}/IPPO-lstm-multienvs-{run_name}/actor.pt"
         torch.save(actor.state_dict(), actor_model_path)
-        critic_model_path = f"{args.work_dir}/IPPO-lstm-multienvs{run_name}/critic.pt"
+        critic_model_path = f"{args.work_dir}/IPPO-lstm-multienvs-{run_name}/critic.pt"
         torch.save(critic.state_dict(), critic_model_path)
 
         # Save the args
         import json
         from dataclasses import asdict
 
-        ippo_args_path = f"{args.work_dir}/IPPO-lstm-multienvs{run_name}/args.json"
+        ippo_args_path = f"{args.work_dir}/IPPO-lstm-multienvs-{run_name}/args.json"
         with open(ippo_args_path, "w") as f:
             json.dump(asdict(args), f, indent=2)
 

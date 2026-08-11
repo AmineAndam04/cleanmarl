@@ -101,9 +101,7 @@ class Actor(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for _ in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def act(self, x, avail_action, hard=False, eps=0):
@@ -131,9 +129,7 @@ class Qnetwrok(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for _ in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, 1)))
 
     def forward(self, x):
@@ -206,15 +202,11 @@ class ReplayBuffer:
         batch = [self.episodes[i] for i in indices]
         lengths = [len(episode["obs"]) for episode in batch]
         max_length = max(lengths)
-        obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(
+        obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(self.device)
+        avail_actions = torch.zeros((batch_size, max_length, self.num_agents, self.action_space)).to(
             self.device
         )
-        avail_actions = torch.zeros(
-            (batch_size, max_length, self.num_agents, self.action_space)
-        ).to(self.device)
-        actions = torch.zeros(
-            (batch_size, max_length, self.num_agents, self.action_space)
-        ).to(self.device)
+        actions = torch.zeros((batch_size, max_length, self.num_agents, self.action_space)).to(self.device)
         reward = torch.zeros((batch_size, max_length)).to(self.device)
         states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
         done = torch.ones((batch_size, max_length)).to(self.device)
@@ -246,9 +238,7 @@ class ReplayBuffer:
 
 def environment(env_type, env_name, env_family, agent_ids, kwargs):
     if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
+        env = PettingZooWrapper(family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "smaclite":
         env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
     elif env_type == "lbf":
@@ -265,9 +255,7 @@ def norm_d(grads, d):
 
 def soft_update(target_net, utility_net, polyak):
     for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
-        target_param.data.copy_(
-            polyak * param.data + (1.0 - polyak) * target_param.data
-        )
+        target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
 
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
@@ -319,9 +307,9 @@ if __name__ == "__main__":
     ).to(device)
     target_critic = copy.deepcopy(critic).to(device)
 
-    mixer = MixingNetwork(
-        n_agents=env.n_agents, s_dim=env.get_state_size(), hidden_dim=args.hyper_dim
-    ).to(device)
+    mixer = MixingNetwork(n_agents=env.n_agents, s_dim=env.get_state_size(), hidden_dim=args.hyper_dim).to(
+        device
+    )
     target_mixer = copy.deepcopy(mixer).to(device)
 
     ## initialize the optimizer
@@ -372,9 +360,7 @@ if __name__ == "__main__":
             "done": [],
             "avail_actions": [],
         }
-        epsilon = linear_schedule(
-            args.start_e, args.end_e, args.exploration_fraction, num_episodes
-        )
+        epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction, num_episodes)
         obs, _ = env.reset()
         ep_reward, ep_length = 0, 0
         done, truncated = False, False
@@ -390,14 +376,10 @@ if __name__ == "__main__":
                 ).cpu()  ## These are one hot-vectors
                 if epsilon > 0:
                     actions_to_take = actions.clone()
-                    actions = F.one_hot(
-                        actions.long(), num_classes=env.get_action_size()
-                    )
+                    actions = F.one_hot(actions.long(), num_classes=env.get_action_size())
                 else:
                     actions_to_take = torch.argmax(actions, dim=-1)
-            next_obs, reward, done, truncated, infos = env.step(
-                actions_to_take.cpu().numpy()
-            )
+            next_obs, reward, done, truncated, infos = env.step(actions_to_take.cpu().numpy())
 
             ep_reward += reward
             ep_length += 1
@@ -449,33 +431,23 @@ if __name__ == "__main__":
                             q_tot_from_target_mixer = target_mixer(
                                 Q=qvals_from_taget_utility, s=batch_states[:, t + 1]
                             ).squeeze()
-                            q_tot_from_target_mixer = torch.nan_to_num(
-                                q_tot_from_target_mixer, nan=0.0
-                            )
+                            q_tot_from_target_mixer = torch.nan_to_num(q_tot_from_target_mixer, nan=0.0)
                             targets = (
                                 batch_reward[:, t]
-                                + args.gamma
-                                * (1 - batch_done[:, t])
-                                * q_tot_from_target_mixer
+                                + args.gamma * (1 - batch_done[:, t]) * q_tot_from_target_mixer
                             )
-                    q_values = critic(
-                        torch.cat((batch_obs[:, t], batch_action[:, t]), dim=-1)
-                    ).squeeze()
+                    q_values = critic(torch.cat((batch_obs[:, t], batch_action[:, t]), dim=-1)).squeeze()
                     q_tot = mixer(Q=q_values, s=batch_states[:, t]).squeeze()
-                    critic_loss += F.mse_loss(
-                        targets[batch_mask[:, t]], q_tot[batch_mask[:, t]]
-                    ) * (batch_mask[:, t].sum())
+                    critic_loss += F.mse_loss(targets[batch_mask[:, t]], q_tot[batch_mask[:, t]]) * (
+                        batch_mask[:, t].sum()
+                    )
                 critic_loss /= batch_mask.sum()
                 critic_optimizer.zero_grad()
                 critic_loss.backward()
                 critic_gradient = norm_d([p.grad for p in critic.parameters()], 2)
                 if args.clip_gradients > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        critic.parameters(), max_norm=args.clip_gradients
-                    )
-                    torch.nn.utils.clip_grad_norm_(
-                        mixer.parameters(), max_norm=args.clip_gradients
-                    )
+                    torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=args.clip_gradients)
+                    torch.nn.utils.clip_grad_norm_(mixer.parameters(), max_norm=args.clip_gradients)
                 critic_optimizer.step()
                 cr_losses.append(critic_loss.item())
                 cr_gradients.append(critic_gradient.item())
@@ -487,9 +459,7 @@ if __name__ == "__main__":
                         avail_action=batch_avail_action[:, t],
                         hard=False,
                     )
-                    q_values = critic(
-                        torch.cat((batch_obs[:, t], actions), dim=-1)
-                    ).squeeze()
+                    q_values = critic(torch.cat((batch_obs[:, t], actions), dim=-1)).squeeze()
                     q_tot = mixer(Q=q_values, s=batch_states[:, t]).squeeze()
                     actor_loss -= q_tot[batch_mask[:, t]].sum()
                 actor_loss /= batch_mask.sum()
@@ -497,23 +467,15 @@ if __name__ == "__main__":
                 actor_loss.backward()
                 actor_gradient = norm_d([p.grad for p in actor.parameters()], 2)
                 if args.clip_gradients > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        actor.parameters(), max_norm=args.clip_gradients
-                    )
+                    torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.clip_gradients)
                 actor_optimizer.step()
                 ac_losses.append(actor_loss.item())
                 ac_gradients.append(actor_gradient.item())
 
             if num_episodes % args.target_network_update_freq == 0:
-                soft_update(
-                    target_net=target_actor, utility_net=actor, polyak=args.polyak
-                )
-                soft_update(
-                    target_net=target_critic, utility_net=critic, polyak=args.polyak
-                )
-                soft_update(
-                    target_net=target_mixer, utility_net=mixer, polyak=args.polyak
-                )
+                soft_update(target_net=target_actor, utility_net=actor, polyak=args.polyak)
+                soft_update(target_net=target_critic, utility_net=critic, polyak=args.polyak)
+                soft_update(target_net=target_mixer, utility_net=mixer, polyak=args.polyak)
         if num_episodes % args.log_every == 0:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
@@ -540,14 +502,10 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     logits = actor.logits(
                         torch.from_numpy(eval_obs).float().to(device),
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
-                        .bool()
-                        .to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
                     )
                     eval_actions = torch.argmax(logits, dim=-1)
-                next_obs_, reward, done, truncated, infos = eval_env.step(
-                    eval_actions.cpu().numpy()
-                )
+                next_obs_, reward, done, truncated, infos = eval_env.step(eval_actions.cpu().numpy())
                 current_reward += reward
                 current_ep_length += 1
                 eval_obs = next_obs_
@@ -570,7 +528,7 @@ if __name__ == "__main__":
 
     if args.save_model:
         # Save the weights
-        actor_model_path = f"{args.work_dir}/FACMAC-{run_name}/agent.pt"
+        actor_model_path = f"{args.work_dir}/FACMAC-{run_name}/actor.pt"
         torch.save(actor.state_dict(), actor_model_path)
         critic_model_path = f"{args.work_dir}/FACMAC-{run_name}/critic.pt"
         torch.save(critic.state_dict(), critic_model_path)
