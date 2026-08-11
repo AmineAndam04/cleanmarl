@@ -1,19 +1,21 @@
 import copy
+import datetime
+import random
+from dataclasses import dataclass
+
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import numpy as np
-from dataclasses import dataclass
-import tyro
-import random
-from env.pettingzoo_wrapper import PettingZooWrapper
 import torch.nn.functional as F
-import datetime
+import torch.optim as optim
+import tyro
+from env.pettingzoo_wrapper import PettingZooWrapper
 from torch.utils.tensorboard import SummaryWriter
 
 
 @dataclass
 class Args:
+    # Environment
     env_type: str = "pz"
     """ Pettingzoo, ... """
     env_name: str = "multiwalker_v9"
@@ -22,14 +24,7 @@ class Args:
     """ Env family when using pz"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
-    gamma: float = 0.99
-    """ Discount factor"""
-    buffer_size: int = 5000
-    """ The number of episodes in the replay buffer"""
-    batch_size: int = 10
-    """ Batch size"""
-    normalize_reward: bool = True
-    """ Normalize the rewards if True"""
+    # Network
     actor_hidden_dim: int = 64
     """ Hidden dimension of actor network"""
     actor_num_layers: int = 1
@@ -40,6 +35,13 @@ class Args:
     """ Number of hidden layers of critic network"""
     hyper_dim: int = 32
     """ Hidden dimension of hyper-network"""
+    # Training
+    total_timesteps: int = 500000
+    """ Total steps in the environment during training"""
+    buffer_size: int = 5000
+    """ The number of episodes in the replay buffer"""
+    batch_size: int = 10
+    """ Batch size"""
     train_freq: int = 1
     """ Train the network each «train_freq» step in the environment"""
     optimizer: str = "Adam"
@@ -48,14 +50,27 @@ class Args:
     """ Learning rate for the actor"""
     learning_rate_critic: float = 0.00001
     """ Learning rate for the critic"""
-    total_timesteps: int = 500000
-    """ Total steps in the environment during training"""
+    gamma: float = 0.99
+    """ Discount factor"""
+    normalize_reward: bool = True
+    """ Normalize the rewards if True"""
+    clip_gradients: float = 0.5
+    """ 0< for no clipping and 0> if clipping at clip_gradients"""
     target_network_update_freq: int = 1
     """ Update the target network each target_network_update_freq» step in the environment"""
     polyak: float = 0.005
     """ Polyak coefficient when using polyak averaging for target network update"""
-    clip_gradients: float = 0.5
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    device: str = "cpu"
+    """ Device (cpu, cuda, mps)"""
+    seed: int = 1
+    """ Random seed"""
+    # logging
+    work_dir: str = "runs"
+    """ Folder to save logs, weights ..."""
+    save_model: bool = False
+    """ If True, save the weights of the agents and hyperparameters"""
+    exp_name: str = "v1"
+    """ Used for logging"""
     log_every: int = 10
     """ Logging steps """
     eval_steps: int = 50
@@ -68,10 +83,6 @@ class Args:
     """ Weights & Biases project name"""
     wnb_entity: str = ""
     """ Weights & Biases entity name"""
-    device: str = "cpu"
-    """ Device (cpu, cuda, mps)"""
-    seed: int = 1
-    """ Random seed"""
 
 
 class Actor(nn.Module):
@@ -80,7 +91,7 @@ class Actor(nn.Module):
         self.output_dim = output_dim
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
-        for i in range(num_layer):
+        for _ in range(num_layer):
             self.layers.append(
                 nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
             )
@@ -97,7 +108,7 @@ class Qnetwrok(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
-        for i in range(num_layer):
+        for _ in range(num_layer):
             self.layers.append(
                 nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
             )
@@ -231,11 +242,6 @@ def soft_update(target_net, utility_net, polyak):
         )
 
 
-def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
-    slope = (end_e - start_e) / duration
-    return max(slope * t + start_e, end_e)
-
-
 if __name__ == "__main__":
     args = tyro.cli(Args)
     # Set the random seed
@@ -243,6 +249,10 @@ if __name__ == "__main__":
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available() and args.device == "cuda":
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    # Set device
     device = torch.device(args.device)
     ## import the environment
     kwargs = {}  # {"render_mode":'human',"shared_reward":False}
@@ -291,7 +301,7 @@ if __name__ == "__main__":
     )
 
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
         import wandb
 
@@ -302,11 +312,12 @@ if __name__ == "__main__":
             config=vars(args),
             name=f"FACMAC-continuous-{run_name}",
         )
-    writer = SummaryWriter(f"runs/FACMAC-continuous-{run_name}")
+    writer = SummaryWriter(f"{args.work_dir}/FACMAC-continuous-{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s"
-        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n{}".format(
+            "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
+        ),
     )
     rb = ReplayBuffer(
         buffer_size=args.buffer_size,
@@ -317,12 +328,9 @@ if __name__ == "__main__":
         normalize_reward=args.normalize_reward,
         device=device,
     )
-    ep_rewards = []
-    ep_lengths = []
-    ep_stats = []
-    num_episode = 0
-    num_updates = 0
-    step = 0
+    ep_rewards, ep_lengths = [], []
+    cr_losses, cr_gradients, ac_losses, ac_gradients = [], [], [], []
+    step, num_episodes = 0, 0
     while step < args.total_timesteps:
         episode = {
             "obs": [],
@@ -352,27 +360,12 @@ if __name__ == "__main__":
             obs = next_obs
         rb.store(episode)
 
-        num_episode += 1
+        num_episodes += 1
         ep_rewards.append(ep_reward)
         ep_lengths.append(ep_length)
-        if args.env_type == "smaclite":
-            ep_stats.append(infos)  ## Add battle won for smaclite
 
-        if num_episode % args.log_every == 0:
-            writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
-            writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
-            writer.add_scalar("rollout/num_episodes", num_episode, step)
-            if args.env_type == "smaclite":
-                writer.add_scalar(
-                    "rollout/battle_won",
-                    np.mean(np.mean([info["battle_won"] for info in ep_stats])),
-                    step,
-                )
-            ep_rewards = []
-            ep_lengths = []
-            ep_stats = []
-        if num_episode > args.batch_size:
-            if num_episode % args.train_freq == 0:
+        if num_episodes > args.batch_size:
+            if num_episodes % args.train_freq == 0:
                 (
                     batch_obs,
                     batch_action,
@@ -422,7 +415,7 @@ if __name__ == "__main__":
                 critic_loss /= batch_mask.sum()
                 critic_optimizer.zero_grad()
                 critic_loss.backward()
-                critic_gradients = norm_d([p.grad for p in critic.parameters()], 2)
+                critic_gradient = norm_d([p.grad for p in critic.parameters()], 2)
                 if args.clip_gradients > 0:
                     torch.nn.utils.clip_grad_norm_(
                         critic.parameters(), max_norm=args.clip_gradients
@@ -431,6 +424,8 @@ if __name__ == "__main__":
                         mixer.parameters(), max_norm=args.clip_gradients
                     )
                 critic_optimizer.step()
+                cr_losses.append(critic_loss.item())
+                cr_gradients.append(critic_gradient.item())
 
                 perm = torch.randperm(batch_obs.size(1) - 1)
                 actor_loss = 0
@@ -445,20 +440,16 @@ if __name__ == "__main__":
                 actor_loss /= batch_mask.sum()
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
-                actor_gradients = norm_d([p.grad for p in actor.parameters()], 2)
+                actor_gradient = norm_d([p.grad for p in actor.parameters()], 2)
                 if args.clip_gradients > 0:
                     torch.nn.utils.clip_grad_norm_(
                         actor.parameters(), max_norm=args.clip_gradients
                     )
                 actor_optimizer.step()
-                num_updates += 1
+                ac_losses.append(actor_loss.item())
+                ac_gradients.append(actor_gradient.item())
 
-                writer.add_scalar("train/critic_loss", critic_loss, step)
-                writer.add_scalar("train/actor_loss", actor_loss, step)
-                writer.add_scalar("train/actor_gradients", actor_gradients, step)
-                writer.add_scalar("train/critic_gradients", critic_gradients, step)
-                writer.add_scalar("train/num_updates", num_updates, step)
-            if num_episode % args.target_network_update_freq == 0:
+            if num_episodes % args.target_network_update_freq == 0:
                 soft_update(
                     target_net=target_actor, utility_net=actor, polyak=args.polyak
                 )
@@ -468,45 +459,59 @@ if __name__ == "__main__":
                 soft_update(
                     target_net=target_mixer, utility_net=mixer, polyak=args.polyak
                 )
-            if num_episode % args.eval_steps == 0:
-                eval_obs, _ = eval_env.reset()
-                eval_ep = 0
-                eval_ep_reward = []
-                eval_ep_length = []
-                eval_ep_stats = []
-                current_reward = 0
-                current_ep_length = 0
-                while eval_ep < args.num_eval_ep:
-                    with torch.no_grad():
-                        eval_actions = actor.act(
-                            torch.from_numpy(eval_obs).float().to(device)
-                        )
-                        eval_actions = torch.clamp(eval_actions, act_low, act_high)
-                    next_obs_, reward, done, truncated, infos = eval_env.step(
-                        eval_actions.cpu().numpy()
+
+        if num_episodes % args.log_every == 0:
+            writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
+            writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
+            if len(ac_losses) > 0:
+                writer.add_scalar("train/critic_loss", np.mean(cr_losses), step)
+                writer.add_scalar("train/critic_gradients", np.mean(cr_gradients), step)
+                writer.add_scalar("train/actor_loss", np.mean(ac_losses), step)
+                writer.add_scalar("train/actor_gradients", np.mean(ac_gradients), step)
+                cr_losses, cr_gradients, ac_losses, ac_gradients = [], [], [], []
+            ep_rewards, ep_lengths = [], []
+
+        if num_episodes % args.eval_steps == 0 or step >= args.total_timesteps - 1:
+            eval_obs, _ = eval_env.reset()
+            eval_ep_reward, eval_ep_length = [], []
+            eval_ep, current_reward, current_ep_length = 0, 0, 0
+            while eval_ep < args.num_eval_ep:
+                with torch.no_grad():
+                    eval_actions = actor.act(
+                        torch.from_numpy(eval_obs).float().to(device)
                     )
-                    current_reward += reward
-                    current_ep_length += 1
-                    eval_obs = next_obs_
-                    if done or truncated:
-                        eval_obs, _ = eval_env.reset()
-                        eval_ep_reward.append(current_reward)
-                        eval_ep_length.append(current_ep_length)
-                        eval_ep_stats.append(infos)
-                        current_reward = 0
-                        current_ep_length = 0
-                        eval_ep += 1
-                writer.add_scalar("eval/ep_reward", np.mean(eval_ep_reward), step)
-                writer.add_scalar("eval/std_ep_reward", np.std(eval_ep_reward), step)
-                writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
-                if args.env_type == "smaclite":
-                    writer.add_scalar(
-                        "eval/battle_won",
-                        np.mean(
-                            np.mean([info["battle_won"] for info in eval_ep_stats])
-                        ),
-                        step,
-                    )
+                    eval_actions = torch.clamp(eval_actions, act_low, act_high)
+                next_obs_, reward, done, truncated, infos = eval_env.step(
+                    eval_actions.cpu().numpy()
+                )
+                current_reward += reward
+                current_ep_length += 1
+                eval_obs = next_obs_
+                if done or truncated:
+                    eval_obs, _ = eval_env.reset()
+                    eval_ep_reward.append(current_reward)
+                    eval_ep_length.append(current_ep_length)
+                    current_reward, current_ep_length = 0, 0
+                    eval_ep += 1
+            writer.add_scalar("eval/ep_reward", np.mean(eval_ep_reward), step)
+            writer.add_scalar("eval/std_ep_reward", np.std(eval_ep_reward), step)
+            writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
+    if args.save_model:
+        # Save the weights
+        actor_model_path = f"{args.work_dir}/FACMAC-continuous-{run_name}/agent.pt"
+        torch.save(actor.state_dict(), actor_model_path)
+        critic_model_path = f"{args.work_dir}/FACMAC-continuous-{run_name}/critic.pt"
+        torch.save(critic.state_dict(), critic_model_path)
+        mixer_model_path = f"{args.work_dir}/FACMAC-continuous-{run_name}/mixer.pt"
+        torch.save(mixer.state_dict(), mixer_model_path)
+
+        # Save the args
+        import json
+        from dataclasses import asdict
+
+        facmac_args_path = f"{args.work_dir}/FACMAC-continuous-{run_name}/args.json"
+        with open(facmac_args_path, "w") as f:
+            json.dump(asdict(args), f, indent=2)
 
     writer.close()
     if args.use_wnb:

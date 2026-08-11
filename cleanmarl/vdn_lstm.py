@@ -75,6 +75,8 @@ class Args:
     """ Folder to save logs, weights..."""
     save_model: bool = False
     """ If True, save the weights of the agents and hyperparameters"""
+    exp_name: str = "v1"
+    """ Used for logging"""
     log_every: int = 10
     """ Logging steps"""
     eval_steps: int = 10000
@@ -262,7 +264,7 @@ if __name__ == "__main__":
         device=device,
     )
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{args.env_type}__{args.env_name}__{time_token}"
+    run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
         import wandb
 
@@ -290,6 +292,7 @@ if __name__ == "__main__":
     )
     current_seq_len, ep_reward, ep_length = 0, 0, 0
     ep_rewards, ep_lengths, ep_stats = [], [], []
+    losses, gradients = [], []
     obs, _ = env.reset(seed=seed)
     avail_action = env.get_avail_actions()
     h = None
@@ -407,25 +410,37 @@ if __name__ == "__main__":
                 h_target = None
                 h_utility = None
                 with torch.no_grad():
-                    target_burn_in = batch_next_obs[:, : args.burn_in, :].reshape(
-                        args.batch_size * env.n_agents, args.burn_in, -1
+                    target_burn_in = (
+                        batch_next_obs[:, : args.burn_in, :]
+                        .transpose(1, 2)
+                        .reshape(args.batch_size * env.n_agents, args.burn_in, -1)
                     )
-                    utility_burn_in = batch_obs[:, : args.burn_in, :].reshape(
-                        args.batch_size * env.n_agents, args.burn_in, -1
+                    utility_burn_in = (
+                        batch_obs[:, : args.burn_in, :]
+                        .transpose(1, 2)
+                        .reshape(args.batch_size * env.n_agents, args.burn_in, -1)
                     )
                     _, h_target = target_network(target_burn_in, h=h_target)
                     _, h_utility = utility_network(utility_burn_in, h=h_utility)
 
                 with torch.no_grad():
-                    obs_target_seq = batch_next_obs[:, args.burn_in :, :].reshape(
-                        args.batch_size * env.n_agents,
-                        args.seq_length - args.burn_in,
-                        -1,
+                    obs_target_seq = (
+                        batch_next_obs[:, args.burn_in :, :]
+                        .transpose(1, 2)
+                        .reshape(
+                            args.batch_size * env.n_agents,
+                            args.seq_length - args.burn_in,
+                            -1,
+                        )
                     )
-                    avail_target_seq = batch_next_avail_action[:, args.burn_in :, :].reshape(
-                        args.batch_size * env.n_agents,
-                        args.seq_length - args.burn_in,
-                        -1,
+                    avail_target_seq = (
+                        batch_next_avail_action[:, args.burn_in :, :]
+                        .transpose(1, 2)
+                        .reshape(
+                            args.batch_size * env.n_agents,
+                            args.seq_length - args.burn_in,
+                            -1,
+                        )
                     )
                     q_next, h_target = target_network(
                         obs_target_seq,
@@ -434,10 +449,10 @@ if __name__ == "__main__":
                     )
                     q_next = q_next.reshape(
                         args.batch_size,
-                        args.seq_length - args.burn_in,
                         env.n_agents,
+                        args.seq_length - args.burn_in,
                         -1,
-                    )
+                    ).transpose(1, 2)
                     q_next_max, _ = q_next.max(dim=-1)
                     vdn_q_max = q_next_max.sum(dim=-1)
                     targets = (
@@ -445,25 +460,30 @@ if __name__ == "__main__":
                         + args.gamma * (1 - batch_done[:, args.burn_in :]) * vdn_q_max
                     )
 
-                batch_obs_t = batch_obs[:, args.burn_in :, :].reshape(
-                    args.batch_size * env.n_agents,
-                    args.seq_length - args.burn_in,
-                    -1,
+                batch_obs_t = (
+                    batch_obs[:, args.burn_in :, :]
+                    .transpose(1, 2)
+                    .reshape(
+                        args.batch_size * env.n_agents,
+                        args.seq_length - args.burn_in,
+                        -1,
+                    )
                 )
                 q_values, h_utility = utility_network(batch_obs_t, h=h_utility)
                 q_values = q_values.reshape(
                     args.batch_size,
-                    args.seq_length - args.burn_in,
                     env.n_agents,
+                    args.seq_length - args.burn_in,
                     -1,
-                )
+                ).transpose(1, 2)
                 q_values = torch.gather(
                     q_values,
                     dim=-1,
                     index=batch_action[:, args.burn_in :, :].unsqueeze(-1),
-                ).squeeze()
-                vqn_q_values = q_values.sum(dim=-1)
-                loss = F.mse_loss(targets, vqn_q_values)
+                )
+                q_values = q_values.reshape_as(q_next_max)
+                vdn_q_values = q_values.sum(dim=-1)
+                loss = F.mse_loss(targets, vdn_q_values)
                 optimizer.zero_grad()
                 loss.backward()
                 grads = [p.grad for p in utility_network.parameters()]
@@ -473,8 +493,8 @@ if __name__ == "__main__":
                         utility_network.parameters(), max_norm=args.clip_gradients
                     )
                 optimizer.step()
-                writer.add_scalar("train/loss", loss, step)
-                writer.add_scalar("train/grads", vdn_gradients, step)
+                losses.append(loss.item())
+                gradients.append(vdn_gradients.item())
 
             if step % args.target_network_update_freq == 0:
                 soft_update(
@@ -487,16 +507,20 @@ if __name__ == "__main__":
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
             writer.add_scalar("rollout/epsilon", epsilon, step)
+            if len(losses) > 0:
+                writer.add_scalar("train/loss", np.mean(losses), step)
+                writer.add_scalar("train/grads", np.mean(gradients), step)
             if args.env_type == "smaclite":
                 writer.add_scalar(
                     "rollout/battle_won",
                     np.mean([info["battle_won"] for info in ep_stats]),
                     step,
                 )
-            ep_rewards = []
-            ep_lengths = []
-            ep_stats = []
-        if step % args.eval_steps == 0 and step > args.learning_starts:
+            ep_rewards, ep_lengths, ep_stats = [], [], []
+            losses, gradients = [], []
+        if (step % args.eval_steps == 0 and step > args.learning_starts) or (
+            step >= args.total_timesteps - 1
+        ):
             eval_obs, _ = eval_env.reset()
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
             eval_ep, current_reward, current_ep_length = 0, 0, 0
