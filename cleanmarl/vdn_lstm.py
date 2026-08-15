@@ -1,5 +1,6 @@
 import copy
 import datetime
+import json
 import random
 from dataclasses import dataclass
 
@@ -9,16 +10,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from marl_envs.wrappers import RecordEpisodeStatistics
+from marl_envs.vec_envs import SyncVectorEnv
+from marl_envs.wrappers import AddAgentIDVec, NormalizeVecObservation, RecordEpisodeStatistics
 from torch.utils.tensorboard import SummaryWriter
 
 
 @dataclass
 class Args:
     # Environment
-    env_type: str = "smaclite"  # "pz"
-    """ pz(for Pettingzoo), smaclite (for SMAClite), lbf (for LBF) ... """
-    env_name: str = "3m"  # "simple_spread_v3" #"pursuit_v4"
+    env_type: str = "smaclite"
+    """ pz(for Pettingzoo), smaclite, lbf, rware, smac, smacv2 """
+    env_name: str = "3m"
     """ Name of the environment """
     env_family: str = "mpe"
     """ Env family when using pz"""
@@ -28,11 +30,11 @@ class Args:
     """ NNormalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
+    max_episode_steps: int = 150
+    "Maximum steps per episode"
     # Network
     hidden_dim: int = 64
     """ Hidden dimension"""
-    num_layers: int = 1
-    """ Number of layers"""
     # Training
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
@@ -52,7 +54,7 @@ class Args:
     """ Number of env steps to initialize the replay buffer"""
     learning_rate: float = 0.00001
     """ Learning rate"""
-    optimizer: str = "AdamW"
+    optimizer: str = "Adam"
     """ The optimizer"""
     target_network_update_freq: int = 1
     """ Frequency of updating target network. The used value is target_network_update_freq*num_envs"""
@@ -128,20 +130,15 @@ class ReplayBuffer:
         device="cpu",
     ):
         self.buffer_size = buffer_size
-        self.num_agents = num_agents
-        self.obs_space = obs_space
-        self.action_space = action_space
         self.seq_length = seq_length
         self.device = device
 
-        self.obs = np.zeros((self.buffer_size, self.seq_length, self.num_agents, self.obs_space))
-        self.action = np.zeros((self.buffer_size, self.seq_length, self.num_agents))
-        self.reward = np.zeros((self.buffer_size, self.seq_length))
-        self.next_obs = np.zeros((self.buffer_size, self.seq_length, self.num_agents, self.obs_space))
-        self.next_avail_action = np.zeros(
-            (self.buffer_size, self.seq_length, self.num_agents, self.action_space)
-        )
-        self.done = np.zeros((self.buffer_size, self.seq_length))
+        self.obs = np.zeros((buffer_size, seq_length, num_agents, obs_space), dtype=np.float32)
+        self.action = np.zeros((buffer_size, seq_length, num_agents), dtype=np.int32)
+        self.reward = np.zeros((buffer_size, seq_length), dtype=np.float32)
+        self.next_obs = np.zeros((buffer_size, seq_length, num_agents, obs_space), dtype=np.float32)
+        self.next_avail_action = np.zeros((buffer_size, seq_length, num_agents, action_space), dtype=np.bool_)
+        self.done = np.zeros((buffer_size, seq_length), dtype=np.bool_)
         self.pos = 0
         self.size = 0
         self.last_pos = 0
@@ -170,15 +167,80 @@ class ReplayBuffer:
         self.size = min(self.size + 1, self.buffer_size)
 
     def sample(self, batch_size):
-        indices = np.random.randint(0, self.size, size=batch_size)
+        indices = np.random.choice(self.size, size=batch_size, replace=False)
         return (
-            torch.from_numpy(self.obs[indices]).float().to(self.device),
-            torch.from_numpy(self.action[indices]).long().to(self.device),
-            torch.from_numpy(self.reward[indices]).float().to(self.device),
-            torch.from_numpy(self.next_obs[indices]).float().to(self.device),
+            torch.from_numpy(self.obs[indices]).to(self.device),
+            torch.from_numpy(self.action[indices]).to(self.device),
+            torch.from_numpy(self.reward[indices]).to(self.device),
+            torch.from_numpy(self.next_obs[indices]).to(self.device),
             torch.from_numpy(self.next_avail_action[indices]).bool().to(self.device),
-            torch.from_numpy(self.done[indices]).float().to(self.device),
+            torch.from_numpy(self.done[indices]).int().to(self.device),
         )
+
+
+def make_env(args, kwargs, eval=False):
+    def env_fn():
+        if args.env_type == "pz":
+            from marl_envs import PettingZooInterface  # noqa: PLC0415
+
+            env = PettingZooInterface(
+                family=args.env_family,
+                max_episode_steps=args.max_episode_steps,
+                env_name=args.env_name,
+                **kwargs,
+            )
+        elif args.env_type == "smaclite":
+            from marl_envs import SMACliteInterface  # noqa: PLC0415
+
+            env = SMACliteInterface(
+                env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs
+            )
+        elif args.env_type == "lbf":
+            from marl_envs import LBFInterface  # noqa: PLC0415
+
+            env = LBFInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
+        elif args.env_type == "rware":
+            from marl_envs import RWAREInterface  # noqa: PLC0415
+
+            env = RWAREInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
+        elif args.env_type == "smac":
+            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
+            from marl_envs import SMACInterface  # noqa: PLC0415
+
+            env = SMACInterface(env_name=args.env_name, seed=args.seed, **kwargs)
+            env = TimeLimit(
+                env=env,
+                max_episode_steps=args.max_episode_steps,
+            )
+        elif args.env_type == "smacv2":
+            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
+            from marl_envs import SMACv2Interface  # noqa: PLC0415
+
+            env = SMACv2Interface(env_name=args.env_name, seed=args.seed, **kwargs)
+            env = TimeLimit(
+                env=env,
+                max_episode_steps=args.max_episode_steps,
+            )
+        else:
+            raise ValueError(f"{args.env_type} nor supported for VDN")
+
+        env = RecordEpisodeStatistics(env)
+        if not eval:
+            if args.normalize_obs:
+                from marl_envs.wrappers import NormalizeObservation  # noqa: PLC0415
+
+                env = NormalizeObservation(env)
+            if args.normalize_reward:
+                from marl_envs.wrappers import NormalizeReward  # noqa: PLC0415
+
+                env = NormalizeReward(env, gamma=args.gamma)
+            if args.agent_ids:
+                from marl_envs.wrappers import AddAgentID  # noqa: PLC0415
+
+                env = AddAgentID(env)
+        return env
+
+    return env_fn
 
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
@@ -186,59 +248,19 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-def make_env(args, kwargs, eval=False):
-    if args.env_type == "pz":
-        from marl_envs import PettingZooInterface  # noqa: PLC0415
-
-        env = PettingZooInterface(family=args.env_family, env_name=args.env_name, **kwargs)
-    elif args.env_type == "smaclite":
-        from marl_envs import SMACliteInterface  # noqa: PLC0415
-
-        env = SMACliteInterface(env_name=args.env_name, **kwargs)
-    elif args.env_type == "lbf":
-        from marl_envs import LBFInterface  # noqa: PLC0415
-
-        env = LBFInterface(env_name=args.env_name, **kwargs)
-    elif args.env_type == "rware":
-        from marl_envs import RWAREInterface  # noqa: PLC0415
-
-        env = RWAREInterface(env_name=args.env_name, **kwargs)
-    elif args.env_type == "smac":
-        from marl_envs import SMACInterface  # noqa: PLC0415
-
-        env = SMACInterface(env_name=args.env_name, seed=args.seed, **kwargs)
-    elif args.env_type == "smacv2":
-        from marl_envs import SMACv2Interface  # noqa: PLC0415
-
-        env = SMACv2Interface(env_name=args.env_name, seed=args.seed, **kwargs)
-    else:
-        raise ValueError(f"{args.env_type} nor supported for VDN")
-    if args.normalize_obs:
-        from marl_envs.wrappers import NormalizeObservation  # noqa: PLC0415
-
-        env = NormalizeObservation(env)
-        if eval:
-            env.update_running_mean = False
-    if args.normalize_reward and not eval:
-        from marl_envs.wrappers import NormalizeReward  # noqa: PLC0415
-
-        env = NormalizeReward(env)
-    if args.agent_ids:
-        from marl_envs.wrappers import AddAgentID  # noqa: PLC0415
-
-        env = AddAgentID(env)
-    return RecordEpisodeStatistics(env)
-
-
 def norm_d(grads, d):
     norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
-    total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
+    total_norm_d = torch.linalg.vector_norm(torch.stack(norms), d)
     return total_norm_d
 
 
 def soft_update(target_net, utility_net, polyak):
     for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
         target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
+
+
+def rms_state_dict(rms):
+    return {"mean": torch.as_tensor(rms.mean).cpu().clone(), "var": torch.as_tensor(rms.var).cpu().clone()}
 
 
 if __name__ == "__main__":
@@ -254,12 +276,18 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(seed)
     kwargs = {}  # {"render_mode":'human',"shared_reward":False}
     # Import the environment
-    env = make_env(args, kwargs={})
-    eval_env = make_env(args, kwargs={}, eval=True)
-    if args.normalize_obs:
-        eval_env.obs_rms = env.obs_rms  # sync env and eval env
+    env = make_env(args, kwargs={})()
+    eval_env = SyncVectorEnv(
+        env_fns=[make_env(args, kwargs={}, eval=True) for _ in range(args.num_eval_ep)], auto_reset=False
+    )
+    if args.normalize_obs:  # Sync normalization statistics
+        eval_env = NormalizeVecObservation(eval_env)
+        eval_env.set_wrapper_attr("update_running_mean", False)
+        eval_env.set_wrapper_attr("obs_rms", env.get_wrapper_attr("obs_rms"))
+    if args.agent_ids:
+        eval_env = AddAgentIDVec(eval_env)
 
-    ## initialize the utility and target networks
+    # Initialize the utility and target networks
     utility_network = Qnetwrok(
         input_dim=env.get_obs_size(),
         hidden_dim=args.hidden_dim,
@@ -290,26 +318,21 @@ if __name__ == "__main__":
             config=vars(args),
             name=f"VDN-LSTM-{run_name}",
         )
-    writer = SummaryWriter(f"{args.work_dir}/VDN-LSTM-{run_name}")
+    log_dir = f"{args.work_dir}/VDN-LSTM-{run_name}"
+    writer = SummaryWriter(log_dir)
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n{}".format(
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
         ),
     )
-    seq_obs, seq_actions, seq_reward, seq_done, seq_next_obs, seq_next_avail_action = (
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
-    current_seq_len = 0
+    seq_obs, seq_actions, seq_reward, seq_done, seq_next_obs, seq_next_avail_action = [[] for _ in range(6)]
+    obs, _ = env.reset(seed=seed)
+    eval_env.reset(seed=seed + 100)
+    avail_action = env.get_avail_actions()
     ep_rewards, ep_lengths, ep_stats = [], [], []
     losses, gradients = [], []
-    obs, _ = env.reset(seed=seed)
-    avail_action = env.get_avail_actions()
+    current_seq_len = 0
     h = None
     for step in range(args.total_timesteps):
         epsilon = linear_schedule(
@@ -318,7 +341,6 @@ if __name__ == "__main__":
             args.exploration_fraction * args.total_timesteps,
             step,
         )
-        # We always need the forward pass even when taking random actions in order to let the h flow through time
         with torch.no_grad():
             q_values, h = utility_network(
                 x=torch.from_numpy(obs).float().to(device),
@@ -326,7 +348,11 @@ if __name__ == "__main__":
                 avail_action=torch.from_numpy(avail_action).bool().to(device),
             )
             q_values = q_values.squeeze(1)
-        actions = env.sample() if random.random() < epsilon else torch.argmax(q_values, dim=-1).cpu().numpy()
+        actions = torch.argmax(q_values, dim=-1).cpu().numpy()
+        explore = np.random.random(actions.shape) < epsilon
+        if explore.any():
+            actions = np.where(explore, env.sample(), actions)
+        # Step the environment
         next_obs, reward, done, truncated, infos = env.step(actions)
         # We need the next_avail_action to compute the target loss : max of Q(next_state)
         next_avail_action = env.get_avail_actions()
@@ -352,21 +378,9 @@ if __name__ == "__main__":
                 np.stack(seq_next_avail_action),
             )
             current_seq_len = 0
-            (
-                seq_obs,
-                seq_actions,
-                seq_reward,
-                seq_done,
-                seq_next_obs,
-                seq_next_avail_action,
-            ) = (
-                [],
-                [],
-                [],
-                [],
-                [],
-                [],
-            )
+            seq_obs, seq_actions, seq_reward, seq_done, seq_next_obs, seq_next_avail_action = [
+                [] for _ in range(6)
+            ]
 
         if done or truncated:
             obs, _ = env.reset()
@@ -387,21 +401,9 @@ if __name__ == "__main__":
                     np.stack(seq_next_avail_action),
                     is_last=True,
                 )
-                (
-                    seq_obs,
-                    seq_actions,
-                    seq_reward,
-                    seq_done,
-                    seq_next_obs,
-                    seq_next_avail_action,
-                ) = (
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                )
+                seq_obs, seq_actions, seq_reward, seq_done, seq_next_obs, seq_next_avail_action = [
+                    [] for _ in range(6)
+                ]
 
         if step > args.learning_starts:
             if step % args.train_freq == 0:
@@ -507,61 +509,61 @@ if __name__ == "__main__":
                     polyak=args.polyak,
                 )
 
-        if len(ep_rewards) > args.log_every:
+        if len(ep_rewards) >= args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
             writer.add_scalar("rollout/epsilon", epsilon, step)
+            if "smac" in args.env_type:
+                writer.add_scalar("rollout/battle_won", np.mean(ep_stats), step)
             if len(losses) > 0:
                 writer.add_scalar("train/loss", np.mean(losses), step)
                 writer.add_scalar("train/grads", np.mean(gradients), step)
-            if "smac" in args.env_type:
-                writer.add_scalar("rollout/battle_won", np.mean(ep_stats), step)
+                losses, gradients = [], []
             ep_rewards, ep_lengths, ep_stats = [], [], []
-            losses, gradients = [], []
         if (step % args.eval_steps == 0 and step > args.learning_starts) or (
             step >= args.total_timesteps - 1
         ):
             eval_obs, _ = eval_env.reset()
-            eval_ep = 0
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
             h_eval = None
-            while eval_ep < args.num_eval_ep:
+            while eval_env.get_env_mask().any():
+                env_mask = eval_env.get_env_mask()
                 with torch.no_grad():
                     q_values, h_eval = utility_network(
-                        torch.from_numpy(eval_obs).float().to(device),
+                        torch.from_numpy(eval_obs).float().flatten(0, 1).to(device),
                         h=h_eval,
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
+                        .bool()
+                        .flatten(0, 1)
+                        .to(device),
                     )
-                q_values = q_values.squeeze(1)
-                actions = torch.argmax(q_values, dim=-1).cpu().numpy()
-                next_obs_, reward, done, truncated, infos = eval_env.step(actions)
-                eval_obs = next_obs_
-                if done or truncated:
-                    eval_obs, _ = eval_env.reset()
-                    eval_ep_reward.append(infos["episode_stats"]["r"])
-                    eval_ep_length.append(infos["episode_stats"]["r"])
+                actions = (
+                    q_values.reshape(args.num_eval_ep, eval_env.n_agents, -1).argmax(dim=-1).cpu().numpy()
+                )
+                eval_obs, reward, done, truncated, infos = eval_env.step(actions)
+                to_store = np.logical_and(np.logical_or(done, truncated), env_mask)
+                for index in np.nonzero(to_store)[0]:
+                    eval_ep_reward.append(infos[index]["episode_stats"]["r"])
+                    eval_ep_length.append(infos[index]["episode_stats"]["l"])
                     if "smac" in args.env_type:
-                        eval_ep_stats.append(infos["battle_won"])
-                    current_reward = 0
-                    current_ep_length = 0
-                    eval_ep += 1
-                    h_eval = None
+                        eval_ep_stats.append(infos[index]["battle_won"])
             writer.add_scalar("eval/ep_reward", np.mean(eval_ep_reward), step)
-            writer.add_scalar("eval/std_ep_reward", np.std(eval_ep_reward), step)
             writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
             if "smac" in args.env_type:
                 writer.add_scalar("eval/battle_won", np.mean(eval_ep_stats), step)
     if args.save_model:
-        # Save the weights
-        vdn_model_path = f"{args.work_dir}/VDN-LSTM-{run_name}/agent.pt"
-        torch.save(utility_network.state_dict(), vdn_model_path)
-        # Save the args
-        import json
-        from dataclasses import asdict
+        checkpoint = {"utility_network": utility_network.state_dict()}
+        if args.normalize_obs:
+            checkpoint["obs_rms"] = rms_state_dict(env.get_wrapper_attr("obs_rms"))
+            state_rms = env.get_wrapper_attr("state_rms")
+            if state_rms is not None:
+                checkpoint["state_rms"] = rms_state_dict(state_rms)
+        if args.normalize_reward:
+            checkpoint["return_rms"] = rms_state_dict(env.get_wrapper_attr("return_rms"))
+        torch.save(checkpoint, f"{log_dir}/agent.pt")
+        with open(f"{log_dir}/args.json", "w") as f:
+            json.dump(vars(args), f, indent=2)
 
-        vdn_args_path = f"{args.work_dir}/VDN-LSTM-{run_name}/args.json"
-        with open(vdn_args_path, "w") as f:
-            json.dump(asdict(args), f, indent=2)
     writer.close()
     if args.use_wnb:
         wandb.finish()

@@ -1,5 +1,6 @@
 import copy
 import datetime
+import json
 import random
 from dataclasses import dataclass
 
@@ -11,9 +12,7 @@ import torch.optim as optim
 import tyro
 from marl_envs.vec_envs import SubprocVectorEnv, SyncVectorEnv
 from marl_envs.wrappers import (
-    AddAgentID,
     AddAgentIDVec,
-    NormalizeObservation,
     NormalizeVecObservation,
     NormalizeVecReward,
     RecordEpisodeStatistics,
@@ -24,11 +23,11 @@ from torch.utils.tensorboard import SummaryWriter
 @dataclass
 class Args:
     # Environment
-    env_type: str = "smaclite"  # "pz"
-    """ pz(for Pettingzoo), smaclite (for SMAClite), lbf (for LBF) ... """
-    env_name: str = "3m"  # "simple_spread_v3" #"pursuit_v4"
+    env_type: str = "smaclite"
+    """ pz(for Pettingzoo), smaclite, lbf, rware, smac, smacv2 """
+    env_name: str = "3m"
     """ Name of the environment """
-    env_family: str = "mpe"  # "sisl"
+    env_family: str = "mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
@@ -40,11 +39,13 @@ class Args:
     """ NNormalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
+    max_episode_steps: int = 150
+    "Maximum steps per episode"
     # Network
     hidden_dim: int = 64
     """ Hidden dimension"""
     num_layers: int = 1
-    """ Number of layers"""
+    """ Number of hidden layers"""
     # Training
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
@@ -127,19 +128,14 @@ class ReplayBuffer:
         device="cpu",
     ):
         self.buffer_size = buffer_size
-        self.num_agents = num_agents
-        self.obs_space = obs_space
-        self.action_space = action_space
-        self.num_envs = num_envs
         self.device = device
-        self.obs = np.zeros((self.buffer_size, self.num_envs, self.num_agents, self.obs_space))
-        self.action = np.zeros((self.buffer_size, self.num_envs, self.num_agents))
-        self.reward = np.zeros((self.buffer_size, self.num_envs))
-        self.next_obs = np.zeros((self.buffer_size, self.num_envs, self.num_agents, self.obs_space))
-        self.next_avail_action = np.zeros(
-            (self.buffer_size, self.num_envs, self.num_agents, self.action_space)
-        )
-        self.done = np.zeros((self.buffer_size, self.num_envs))
+
+        self.obs = np.zeros((buffer_size, num_envs, num_agents, obs_space), dtype=np.float32)
+        self.action = np.zeros((buffer_size, num_envs, num_agents), dtype=np.int32)
+        self.reward = np.zeros((buffer_size, num_envs), dtype=np.float32)
+        self.next_obs = np.zeros((buffer_size, num_envs, num_agents, obs_space), dtype=np.float32)
+        self.next_avail_action = np.zeros((buffer_size, num_envs, num_agents, action_space), dtype=np.bool_)
+        self.done = np.zeros((buffer_size, num_envs), dtype=np.float32)
         self.pos = 0
         self.size = 0
 
@@ -154,35 +150,15 @@ class ReplayBuffer:
         self.size = min(self.size + 1, self.buffer_size)
 
     def sample(self, batch_size):
-        indices = np.random.randint(0, self.size, size=batch_size)
+        indices = np.random.choice(self.size, size=batch_size, replace=False)
         return (
-            torch.from_numpy(self.obs[indices])
-            .reshape(batch_size * self.num_envs, self.num_agents, self.obs_space)
-            .float()
-            .to(self.device),
-            torch.from_numpy(self.action[indices])
-            .reshape(batch_size * self.num_envs, self.num_agents)
-            .long()
-            .to(self.device),
-            torch.from_numpy(self.reward[indices])
-            .reshape(batch_size * self.num_envs)
-            .float()
-            .to(self.device),
-            torch.from_numpy(self.next_obs[indices])
-            .reshape(batch_size * self.num_envs, self.num_agents, self.obs_space)
-            .float()
-            .to(self.device),
-            torch.from_numpy(self.next_avail_action[indices])
-            .reshape(batch_size * self.num_envs, self.num_agents, self.action_space)
-            .bool()
-            .to(self.device),
-            torch.from_numpy(self.done[indices]).reshape(batch_size * self.num_envs).float().to(self.device),
+            torch.from_numpy(self.obs[indices]).flatten(0, 1).to(self.device),
+            torch.from_numpy(self.action[indices]).flatten(0, 1).to(self.device),
+            torch.from_numpy(self.reward[indices]).flatten(0, 1).to(self.device),
+            torch.from_numpy(self.next_obs[indices]).flatten(0, 1).to(self.device),
+            torch.from_numpy(self.next_avail_action[indices]).flatten(0, 1).to(self.device),
+            torch.from_numpy(self.done[indices]).flatten(0, 1).to(self.device),
         )
-
-
-def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
-    slope = (end_e - start_e) / duration
-    return max(slope * t + start_e, end_e)
 
 
 def make_env(args, kwargs):
@@ -190,27 +166,44 @@ def make_env(args, kwargs):
         if args.env_type == "pz":
             from marl_envs import PettingZooInterface  # noqa: PLC0415
 
-            env = PettingZooInterface(family=args.env_family, env_name=args.env_name, **kwargs)
+            env = PettingZooInterface(
+                family=args.env_family,
+                env_name=args.env_name,
+                max_episode_steps=args.max_episode_steps,
+                **kwargs,
+            )
         elif args.env_type == "smaclite":
             from marl_envs import SMACliteInterface  # noqa: PLC0415
 
-            env = SMACliteInterface(env_name=args.env_name, **kwargs)
+            env = SMACliteInterface(
+                env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs
+            )
         elif args.env_type == "lbf":
             from marl_envs import LBFInterface  # noqa: PLC0415
 
-            env = LBFInterface(env_name=args.env_name, **kwargs)
+            env = LBFInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
         elif args.env_type == "rware":
             from marl_envs import RWAREInterface  # noqa: PLC0415
 
-            env = RWAREInterface(env_name=args.env_name, **kwargs)
+            env = RWAREInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
         elif args.env_type == "smac":
+            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
             from marl_envs import SMACInterface  # noqa: PLC0415
 
             env = SMACInterface(env_name=args.env_name, seed=args.seed, **kwargs)
+            env = TimeLimit(
+                env=env,
+                max_episode_steps=args.max_episode_steps,
+            )
         elif args.env_type == "smacv2":
+            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
             from marl_envs import SMACv2Interface  # noqa: PLC0415
 
             env = SMACv2Interface(env_name=args.env_name, seed=args.seed, **kwargs)
+            env = TimeLimit(
+                env=env,
+                max_episode_steps=args.max_episode_steps,
+            )
         else:
             raise ValueError(f"{args.env_type} nor supported for VDN")
 
@@ -219,15 +212,24 @@ def make_env(args, kwargs):
     return env_fn
 
 
+def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
+    slope = (end_e - start_e) / duration
+    return max(slope * t + start_e, end_e)
+
+
 def norm_d(grads, d):
     norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
-    total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
+    total_norm_d = torch.linalg.vector_norm(torch.stack(norms), d)
     return total_norm_d
 
 
 def soft_update(target_net, utility_net, polyak):
     for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
         target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
+
+
+def rms_state_dict(rms):
+    return {"mean": torch.as_tensor(rms.mean).cpu().clone(), "var": torch.as_tensor(rms.var).cpu().clone()}
 
 
 if __name__ == "__main__":
@@ -246,17 +248,17 @@ if __name__ == "__main__":
     env_fn = make_env(args, kwargs={})
     env_parallelizer = SubprocVectorEnv if args.use_subproc else SyncVectorEnv
     envs = env_parallelizer(env_fns=[env_fn for _ in range(args.num_envs)], auto_reset=False)
-    eval_env = env_fn()
+    eval_env = SyncVectorEnv(env_fns=[env_fn for _ in range(args.num_eval_ep)], auto_reset=False)
     if args.normalize_obs:
-        envs = NormalizeVecObservation(envs)
-        eval_env = NormalizeObservation(eval_env)
-        eval_env.obs_rms = envs.obs_rms
-        eval_env.update_running_mean = False
+        envs = NormalizeVecObservation(envs, normalize_state=False)
+        eval_env = NormalizeVecObservation(eval_env)
+        eval_env.set_wrapper_attr("update_running_mean", False)
+        eval_env.set_wrapper_attr("obs_rms", envs.get_wrapper_attr("obs_rms"))
     if args.normalize_reward:
-        envs = NormalizeVecReward(envs)
+        envs = NormalizeVecReward(envs, gamma=args.gamma)
     if args.agent_ids:
         envs = AddAgentIDVec(envs)
-        eval_env = AddAgentID(eval_env)
+        eval_env = AddAgentIDVec(eval_env)
 
     # Initialize the netowrks
     utility_network = Qnetwrok(
@@ -293,7 +295,8 @@ if __name__ == "__main__":
             config=vars(args),
             name=f"VDN-multienvs-{run_name}",
         )
-    writer = SummaryWriter(f"{args.work_dir}/VDN-multienvs-{run_name}")
+    log_dir = f"{args.work_dir}/VDN-multienvs-{run_name}"
+    writer = SummaryWriter(log_dir)
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n{}".format(
@@ -301,8 +304,8 @@ if __name__ == "__main__":
         ),
     )
 
-    # Reset the environments
     obs, _ = envs.reset(seed=seed)
+    eval_env.reset(seed=seed + 100)
     avail_action = envs.get_avail_actions()
     ep_rewards, ep_lengths, ep_stats = [], [], []
     losses, gradients = [], []
@@ -315,24 +318,25 @@ if __name__ == "__main__":
             args.exploration_fraction * args.total_timesteps,
             step,
         )
-        if random.random() < epsilon:
-            actions = envs.sample()
-        else:
-            with torch.no_grad():
-                q_values = utility_network(
-                    x=torch.from_numpy(obs).float().to(device),
-                    avail_action=torch.from_numpy(avail_action).bool().to(device),
-                )
-            actions = torch.argmax(q_values, dim=-1).cpu().numpy()
-        # Execute the action
+        with torch.no_grad():
+            q_values = utility_network(
+                x=torch.from_numpy(obs).float().to(device),
+                avail_action=torch.from_numpy(avail_action).bool().to(device),
+            )
+        actions = torch.argmax(q_values, dim=-1).cpu().numpy()
+        # explore = np.random.random(envs.n_agents) < epsilon
+        explore = np.random.random(actions.shape) < epsilon
+        if explore.any():
+            actions = np.where(explore, envs.sample(), actions)
+        # Step the environment
         next_obs, reward, done, truncated, infos = envs.step(actions)
         next_avail_action = envs.get_avail_actions()
-
         step += args.num_envs
 
         rb.store(obs, actions, reward, done, next_obs, next_avail_action)
+
         obs, avail_action = next_obs, next_avail_action
-        finished = done | truncated
+        finished = np.logical_or(done, truncated)
         if finished.any():
             obs, _ = envs.reset(indices=finished)
             avail_action = envs.get_avail_actions()
@@ -380,57 +384,52 @@ if __name__ == "__main__":
                     polyak=args.polyak,
                 )
 
-        if len(ep_rewards) > args.log_every:
+        if len(ep_rewards) >= args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
             writer.add_scalar("rollout/epsilon", epsilon, step)
+            if "smac" in args.env_type:
+                writer.add_scalar("rollout/battle_won", np.mean(ep_stats), step)
             if len(losses) > 0:
                 writer.add_scalar("train/loss", np.mean(losses), step)
                 writer.add_scalar("train/grads", np.mean(gradients), step)
-            if args.env_type == "smaclite":
-                writer.add_scalar("rollout/battle_won", np.mean(ep_stats), step)
+                losses, gradients = [], []
             ep_rewards, ep_lengths, ep_stats = [], [], []
-            losses, gradients = [], []
 
         if (step > 0 and step % (args.eval_steps * args.num_envs) == 0) or (step >= args.total_timesteps - 1):
             eval_obs, _ = eval_env.reset()
-            eval_ep = 0
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
-            while eval_ep < args.num_eval_ep:
+            while eval_env.get_env_mask().any():
+                env_mask = eval_env.get_env_mask()
                 with torch.no_grad():
                     q_values = utility_network(
-                        torch.from_numpy(eval_obs).float().to(device),
+                        x=torch.from_numpy(eval_obs).float().to(device),
                         avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
                     )
-                actions = torch.argmax(q_values, dim=-1)
-                next_obs_, reward, done, truncated, infos = eval_env.step(actions.cpu().numpy())
-                eval_obs = next_obs_
-                if done or truncated:
-                    eval_obs, _ = eval_env.reset()
-                    eval_ep_reward.append(infos["episode_stats"]["r"])
-                    eval_ep_length.append(infos["episode_stats"]["r"])
+                actions = q_values.argmax(dim=-1).cpu().numpy()
+                eval_obs, reward, done, truncated, infos = eval_env.step(actions)
+                to_store = np.logical_and(np.logical_or(done, truncated), env_mask)
+                for index in np.nonzero(to_store)[0]:
+                    eval_ep_reward.append(infos[index]["episode_stats"]["r"])
+                    eval_ep_length.append(infos[index]["episode_stats"]["l"])
                     if "smac" in args.env_type:
-                        eval_ep_stats.append(infos["battle_won"])
-                    current_reward = 0
-                    current_ep_length = 0
-                    eval_ep += 1
+                        eval_ep_stats.append(infos[index]["battle_won"])
             writer.add_scalar("eval/ep_reward", np.mean(eval_ep_reward), step)
-            writer.add_scalar("eval/std_ep_reward", np.std(eval_ep_reward), step)
             writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
             if "smac" in args.env_type:
                 writer.add_scalar("eval/battle_won", np.mean(eval_ep_stats), step)
-
     if args.save_model:
-        # Save the weights
-        vdn_model_path = f"{args.work_dir}/VDN-multienvs-{run_name}/agent.pt"
-        torch.save(utility_network.state_dict(), vdn_model_path)
-        # Save the args
-        import json
-        from dataclasses import asdict
-
-        vdn_args_path = f"{args.work_dir}/VDN-multienvs-{run_name}/args.json"
-        with open(vdn_args_path, "w") as f:
-            json.dump(asdict(args), f, indent=2)
+        checkpoint = {"utility_network": utility_network.state_dict()}
+        if args.normalize_obs:
+            checkpoint["obs_rms"] = rms_state_dict(envs.get_wrapper_attr("obs_rms"))
+            state_rms = envs.get_wrapper_attr("state_rms")
+            if state_rms is not None:
+                checkpoint["state_rms"] = rms_state_dict(state_rms)
+        if args.normalize_reward:
+            checkpoint["return_rms"] = rms_state_dict(envs.get_wrapper_attr("return_rms"))
+        torch.save(checkpoint, f"{log_dir}/agent.pt")
+        with open(f"{log_dir}/args.json", "w") as f:
+            json.dump(vars(args), f, indent=2)
 
     writer.close()
     if args.use_wnb:
