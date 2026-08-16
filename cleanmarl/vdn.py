@@ -104,7 +104,7 @@ class Qnetwrok(nn.Module):
         for layer in self.layers:
             x = layer(x)
         if avail_action is not None:
-            x = x.masked_fill(~avail_action, float("-inf"))
+            x = x.masked_fill(~avail_action, -1e8)
         return x
 
 
@@ -236,6 +236,7 @@ def rms_state_dict(rms):
 
 
 if __name__ == "__main__":
+    # ---- Prepare for training: seed, networks, optim ... -------
     args = tyro.cli(Args)
     # Set the randomness seed
     seed = args.seed
@@ -266,11 +267,9 @@ if __name__ == "__main__":
         output_dim=env.get_action_size(),
     ).to(device)
     target_network = copy.deepcopy(utility_network).to(device)
-
     # Initialize the optimizer
     optimizer = getattr(optim, args.optimizer)
     optimizer = optimizer(utility_network.parameters(), lr=args.learning_rate)
-
     # Initialize a shared replay buffer
     rb = ReplayBuffer(
         buffer_size=args.buffer_size,
@@ -279,6 +278,7 @@ if __name__ == "__main__":
         num_agents=env.n_agents,
         device=device,
     )
+    # Logging
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # noqa: DTZ005
     run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
@@ -306,19 +306,17 @@ if __name__ == "__main__":
     ep_rewards, ep_lengths, ep_stats = [], [], []
     losses, gradients = [], []
     for step in range(args.total_timesteps):
+        # ---- Step the environment -------
         # select actions
         epsilon = linear_schedule(
-            args.start_e,
-            args.end_e,
-            args.exploration_fraction * args.total_timesteps,
-            step,
+            args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step
         )
         with torch.no_grad():
             q_values = utility_network(
                 x=torch.from_numpy(obs).float().to(device),
                 avail_action=torch.from_numpy(avail_action).bool().to(device),
             )
-        actions = torch.argmax(q_values, dim=-1).cpu().numpy()
+        actions = q_values.argmax(dim=-1).cpu().numpy()
         explore = np.random.random(actions.shape) < epsilon
         if explore.any():
             actions = np.where(explore, env.sample(), actions)
@@ -326,6 +324,7 @@ if __name__ == "__main__":
         next_obs, reward, done, truncated, infos = env.step(actions)
         # We need the next_avail_action to compute the target loss : max of Q(next_state)
         next_avail_action = env.get_avail_actions()
+        # Store the step
         rb.store(obs, actions, reward, done, next_obs, next_avail_action)
         obs = next_obs
         avail_action = next_avail_action
@@ -336,9 +335,10 @@ if __name__ == "__main__":
             ep_lengths.append(infos["episode_stats"]["l"])
             if "smac" in args.env_type:
                 ep_stats.append(infos["battle_won"])
-
+        # ---- Training loop -------
         if step > args.learning_starts:
             if step % args.train_freq == 0:
+                # Sample a batch of steps
                 (
                     batch_obs,
                     batch_action,
@@ -351,9 +351,8 @@ if __name__ == "__main__":
                     q_next_max, _ = target_network(batch_next_obs, avail_action=batch_next_avail_action).max(
                         dim=-1
                     )
-                vdn_q_max = q_next_max.sum(dim=-1)
-                targets = batch_reward + args.gamma * (1 - batch_done) * vdn_q_max
-
+                    vdn_q_max = q_next_max.sum(dim=-1)
+                    targets = batch_reward + args.gamma * (1 - batch_done) * vdn_q_max
                 q_values = torch.gather(utility_network(batch_obs), dim=-1, index=batch_action.unsqueeze(-1))
                 q_values = q_values.reshape_as(q_next_max)
                 vdn_q_values = q_values.sum(dim=-1)
@@ -367,13 +366,10 @@ if __name__ == "__main__":
                 optimizer.step()
                 losses.append(loss.item())
                 gradients.append(vdn_gradients.item())
+            # Update the target network
             if step % args.target_network_update_freq == 0:
-                soft_update(
-                    target_net=target_network,
-                    utility_net=utility_network,
-                    polyak=args.polyak,
-                )
-
+                soft_update(target_net=target_network, utility_net=utility_network, polyak=args.polyak)
+        # Logging
         if len(ep_rewards) >= args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
@@ -385,7 +381,7 @@ if __name__ == "__main__":
                 writer.add_scalar("train/grads", np.mean(gradients), step)
                 losses, gradients = [], []
             ep_rewards, ep_lengths, ep_stats = [], [], []
-
+        # ---- Evaluate on separate envs -------
         if (step > 0 and step % args.eval_steps == 0) or (step >= args.total_timesteps - 1):
             eval_obs, _ = eval_env.reset()
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
@@ -408,6 +404,7 @@ if __name__ == "__main__":
             writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
             if "smac" in args.env_type:
                 writer.add_scalar("eval/battle_won", np.mean(eval_ep_stats), step)
+    # ---- Save checkpoints -------
     if args.save_model:
         checkpoint = {"utility_network": utility_network.state_dict()}
         if args.normalize_obs:
@@ -420,7 +417,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-
+    # ---- Close loggings and envs -------
     writer.close()
     if args.use_wnb:
         wandb.finish()

@@ -115,7 +115,7 @@ class Qnetwrok(nn.Module):
         x, h = self.lstm(x, h)
         x = self.fc2(x)
         if avail_action is not None:
-            x = x.masked_fill(~avail_action, float("-inf"))
+            x = x.masked_fill(~avail_action, -1e8)
         return x, h
 
 
@@ -264,17 +264,18 @@ def rms_state_dict(rms):
 
 
 if __name__ == "__main__":
+    # ---- Prepare for training: seed, networks, optim ... -------
     args = tyro.cli(Args)
     # Set the randomness seed
     seed = args.seed
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    device = torch.device(args.device)
     if torch.cuda.is_available() and args.device == "cuda":
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-    kwargs = {}  # {"render_mode":'human',"shared_reward":False}
+    # Set device
+    device = torch.device(args.device)
     # Import the environment
     env = make_env(args, kwargs={})()
     eval_env = SyncVectorEnv(
@@ -286,8 +287,9 @@ if __name__ == "__main__":
         eval_env.set_wrapper_attr("obs_rms", env.get_wrapper_attr("obs_rms"))
     if args.agent_ids:
         eval_env = AddAgentIDVec(eval_env)
-
-    # Initialize the utility and target networks
+    env.reset(seed=seed)
+    eval_env.reset(seed=seed + 100)
+    # Initialize the networks
     utility_network = Qnetwrok(
         input_dim=env.get_obs_size(),
         hidden_dim=args.hidden_dim,
@@ -297,7 +299,7 @@ if __name__ == "__main__":
     # Initialize the optimizer
     optimizer = getattr(optim, args.optimizer)
     optimizer = optimizer(utility_network.parameters(), lr=args.learning_rate)
-
+    # Initialize the replay buffer
     rb = ReplayBuffer(
         buffer_size=args.buffer_size,
         obs_space=env.get_obs_size(),
@@ -306,6 +308,7 @@ if __name__ == "__main__":
         seq_length=args.seq_length,
         device=device,
     )
+    # Logging
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
@@ -327,19 +330,16 @@ if __name__ == "__main__":
         ),
     )
     seq_obs, seq_actions, seq_reward, seq_done, seq_next_obs, seq_next_avail_action = [[] for _ in range(6)]
-    obs, _ = env.reset(seed=seed)
-    eval_env.reset(seed=seed + 100)
+    obs, _ = env.reset()
     avail_action = env.get_avail_actions()
     ep_rewards, ep_lengths, ep_stats = [], [], []
     losses, gradients = [], []
     current_seq_len = 0
     h = None
     for step in range(args.total_timesteps):
+        # ---- Collect an episode -------
         epsilon = linear_schedule(
-            args.start_e,
-            args.end_e,
-            args.exploration_fraction * args.total_timesteps,
-            step,
+            args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step
         )
         with torch.no_grad():
             q_values, h = utility_network(
@@ -354,9 +354,7 @@ if __name__ == "__main__":
             actions = np.where(explore, env.sample(), actions)
         # Step the environment
         next_obs, reward, done, truncated, infos = env.step(actions)
-        # We need the next_avail_action to compute the target loss : max of Q(next_state)
         next_avail_action = env.get_avail_actions()
-
         seq_obs.append(obs)
         seq_actions.append(actions)
         seq_reward.append(reward)
@@ -364,10 +362,8 @@ if __name__ == "__main__":
         seq_next_obs.append(next_obs)
         seq_next_avail_action.append(next_avail_action)
         current_seq_len += 1
-
         obs = next_obs
         avail_action = next_avail_action
-
         if current_seq_len == args.seq_length:
             rb.store(
                 np.stack(seq_obs),
@@ -404,9 +400,10 @@ if __name__ == "__main__":
                 seq_obs, seq_actions, seq_reward, seq_done, seq_next_obs, seq_next_avail_action = [
                     [] for _ in range(6)
                 ]
-
+        # ---- Training loop ------
         if step > args.learning_starts:
             if step % args.train_freq == 0:
+                # Sample a batch of episodes
                 (
                     batch_obs,
                     batch_action,
@@ -435,20 +432,12 @@ if __name__ == "__main__":
                     obs_target_seq = (
                         batch_next_obs[:, args.burn_in :, :]
                         .transpose(1, 2)
-                        .reshape(
-                            args.batch_size * env.n_agents,
-                            args.seq_length - args.burn_in,
-                            -1,
-                        )
+                        .reshape(args.batch_size * env.n_agents, args.seq_length - args.burn_in, -1)
                     )
                     avail_target_seq = (
                         batch_next_avail_action[:, args.burn_in :, :]
                         .transpose(1, 2)
-                        .reshape(
-                            args.batch_size * env.n_agents,
-                            args.seq_length - args.burn_in,
-                            -1,
-                        )
+                        .reshape(args.batch_size * env.n_agents, args.seq_length - args.burn_in, -1)
                     )
                     q_next, h_target = target_network(
                         obs_target_seq,
@@ -456,10 +445,7 @@ if __name__ == "__main__":
                         avail_action=avail_target_seq,
                     )
                     q_next = q_next.reshape(
-                        args.batch_size,
-                        env.n_agents,
-                        args.seq_length - args.burn_in,
-                        -1,
+                        args.batch_size, env.n_agents, args.seq_length - args.burn_in, -1
                     ).transpose(1, 2)
                     q_next_max, _ = q_next.max(dim=-1)
                     vdn_q_max = q_next_max.sum(dim=-1)
@@ -471,23 +457,14 @@ if __name__ == "__main__":
                 batch_obs_t = (
                     batch_obs[:, args.burn_in :, :]
                     .transpose(1, 2)
-                    .reshape(
-                        args.batch_size * env.n_agents,
-                        args.seq_length - args.burn_in,
-                        -1,
-                    )
+                    .reshape(args.batch_size * env.n_agents, args.seq_length - args.burn_in, -1)
                 )
                 q_values, h_utility = utility_network(batch_obs_t, h=h_utility)
                 q_values = q_values.reshape(
-                    args.batch_size,
-                    env.n_agents,
-                    args.seq_length - args.burn_in,
-                    -1,
+                    args.batch_size, env.n_agents, args.seq_length - args.burn_in, -1
                 ).transpose(1, 2)
                 q_values = torch.gather(
-                    q_values,
-                    dim=-1,
-                    index=batch_action[:, args.burn_in :, :].unsqueeze(-1),
+                    q_values, dim=-1, index=batch_action[:, args.burn_in :, :].unsqueeze(-1)
                 )
                 q_values = q_values.reshape_as(q_next_max)
                 vdn_q_values = q_values.sum(dim=-1)
@@ -501,14 +478,10 @@ if __name__ == "__main__":
                 optimizer.step()
                 losses.append(loss.item())
                 gradients.append(vdn_gradients.item())
-
+            # Update target networks
             if step % args.target_network_update_freq == 0:
-                soft_update(
-                    target_net=target_network,
-                    utility_net=utility_network,
-                    polyak=args.polyak,
-                )
-
+                soft_update(target_net=target_network, utility_net=utility_network, polyak=args.polyak)
+        # Logging
         if len(ep_rewards) >= args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
@@ -520,6 +493,7 @@ if __name__ == "__main__":
                 writer.add_scalar("train/grads", np.mean(gradients), step)
                 losses, gradients = [], []
             ep_rewards, ep_lengths, ep_stats = [], [], []
+        # ---- Evaluate on separate envs -------
         if (step % args.eval_steps == 0 and step > args.learning_starts) or (
             step >= args.total_timesteps - 1
         ):
@@ -551,6 +525,7 @@ if __name__ == "__main__":
             writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
             if "smac" in args.env_type:
                 writer.add_scalar("eval/battle_won", np.mean(eval_ep_stats), step)
+    # ---- Save checkpoints -------
     if args.save_model:
         checkpoint = {"utility_network": utility_network.state_dict()}
         if args.normalize_obs:
@@ -563,7 +538,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-
+    # ---- Close loggings and envs -------
     writer.close()
     if args.use_wnb:
         wandb.finish()

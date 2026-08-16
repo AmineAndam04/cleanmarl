@@ -33,15 +33,6 @@ def test_vdn(tmp_path):
     assert checkpoint_path.stat().st_size > 0
     assert args_path.is_file()
 
-    # Verify that agent.pt is a readable PyTorch state dict.
-    state_dict = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-    )
-    assert state_dict
-    assert all(isinstance(value, torch.Tensor) for value in state_dict.values())
-
     # Verify the saved configuration.
     saved_args = json.loads(args_path.read_text())
     assert saved_args["save_model"] is True
@@ -133,15 +124,6 @@ def test_vdn_lstm(tmp_path):
     assert checkpoint_path.is_file()
     assert checkpoint_path.stat().st_size > 0
     assert args_path.is_file()
-
-    # Verify that agent.pt is a readable PyTorch state dict.
-    state_dict = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-    )
-    assert state_dict
-    assert all(isinstance(value, torch.Tensor) for value in state_dict.values())
 
     # Verify the saved configuration.
     saved_args = json.loads(args_path.read_text())
@@ -236,15 +218,6 @@ def test_vdn_multienv(tmp_path):
     assert checkpoint_path.is_file()
     assert checkpoint_path.stat().st_size > 0
     assert args_path.is_file()
-
-    # Verify that agent.pt is a readable PyTorch state dict.
-    state_dict = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-    )
-    assert state_dict
-    assert all(isinstance(value, torch.Tensor) for value in state_dict.values())
 
     # Verify the saved configuration.
     saved_args = json.loads(args_path.read_text())

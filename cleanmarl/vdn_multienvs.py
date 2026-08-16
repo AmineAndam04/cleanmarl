@@ -113,7 +113,7 @@ class Qnetwrok(nn.Module):
         for layer in self.layers:
             x = layer(x)
         if avail_action is not None:
-            x = x.masked_fill(~avail_action, float("-inf"))
+            x = x.masked_fill(~avail_action, -1e8)
         return x
 
 
@@ -233,6 +233,7 @@ def rms_state_dict(rms):
 
 
 if __name__ == "__main__":
+    # ---- Prepare for training: seed, networks, optim ... -------
     args = tyro.cli(Args)
     # Set the seeds
     seed = args.seed
@@ -259,7 +260,6 @@ if __name__ == "__main__":
     if args.agent_ids:
         envs = AddAgentIDVec(envs)
         eval_env = AddAgentIDVec(eval_env)
-
     # Initialize the netowrks
     utility_network = Qnetwrok(
         input_dim=envs.get_obs_size(),
@@ -268,12 +268,10 @@ if __name__ == "__main__":
         output_dim=envs.get_action_size(),
     ).to(device)
     target_network = copy.deepcopy(utility_network).to(device)
-
     # Initialize the optimizer
     optimizer = getattr(optim, args.optimizer)
     optimizer = optimizer(utility_network.parameters(), lr=args.learning_rate)
-
-    ## initialize a shared replay buffer
+    # Initialize the replay buffer
     rb = ReplayBuffer(
         buffer_size=args.buffer_size,
         obs_space=envs.get_obs_size(),
@@ -282,7 +280,7 @@ if __name__ == "__main__":
         num_envs=args.num_envs,
         device=device,
     )
-
+    # Logging
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
@@ -311,12 +309,10 @@ if __name__ == "__main__":
     losses, gradients = [], []
     step = 0
     while step < args.total_timesteps:
-        ## select actions
+        # ---- Collect an episode -------
+        # select actions
         epsilon = linear_schedule(
-            args.start_e,
-            args.end_e,
-            args.exploration_fraction * args.total_timesteps,
-            step,
+            args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step
         )
         with torch.no_grad():
             q_values = utility_network(
@@ -324,7 +320,6 @@ if __name__ == "__main__":
                 avail_action=torch.from_numpy(avail_action).bool().to(device),
             )
         actions = torch.argmax(q_values, dim=-1).cpu().numpy()
-        # explore = np.random.random(envs.n_agents) < epsilon
         explore = np.random.random(actions.shape) < epsilon
         if explore.any():
             actions = np.where(explore, envs.sample(), actions)
@@ -332,23 +327,21 @@ if __name__ == "__main__":
         next_obs, reward, done, truncated, infos = envs.step(actions)
         next_avail_action = envs.get_avail_actions()
         step += args.num_envs
-
         rb.store(obs, actions, reward, done, next_obs, next_avail_action)
-
         obs, avail_action = next_obs, next_avail_action
         finished = np.logical_or(done, truncated)
         if finished.any():
             obs, _ = envs.reset(indices=finished)
             avail_action = envs.get_avail_actions()
-
         for index in np.nonzero(finished)[0]:
             ep_rewards.append(infos[index]["episode_stats"]["r"])
             ep_lengths.append(infos[index]["episode_stats"]["l"])
             if "smac" in args.env_type:
                 ep_stats.append(infos[index]["battle_won"])
-
+        # ---- Training loop -------
         if step > args.learning_starts:
             if step % (args.train_freq * args.num_envs) == 0:
+                # Sample a batch of episodes
                 (
                     batch_obs,
                     batch_action,
@@ -357,12 +350,13 @@ if __name__ == "__main__":
                     batch_next_avail_action,
                     batch_done,
                 ) = rb.sample(args.batch_size)
+                # Train the networks
                 with torch.no_grad():
                     q_next_max, _ = target_network(batch_next_obs, avail_action=batch_next_avail_action).max(
                         dim=-1
                     )
-                vdn_q_max = q_next_max.sum(dim=-1)
-                targets = batch_reward + args.gamma * (1 - batch_done) * vdn_q_max
+                    vdn_q_max = q_next_max.sum(dim=-1)
+                    targets = batch_reward + args.gamma * (1 - batch_done) * vdn_q_max
                 q_values = torch.gather(utility_network(batch_obs), dim=-1, index=batch_action.unsqueeze(-1))
                 q_values = q_values.reshape_as(q_next_max)
                 vdn_q_values = q_values.sum(dim=-1)
@@ -376,14 +370,10 @@ if __name__ == "__main__":
                 optimizer.step()
                 losses.append(loss.item())
                 gradients.append(vdn_gradients.item())
-
+            # Update target networks
             if step % (args.target_network_update_freq * args.num_envs) == 0:
-                soft_update(
-                    target_net=target_network,
-                    utility_net=utility_network,
-                    polyak=args.polyak,
-                )
-
+                soft_update(target_net=target_network, utility_net=utility_network, polyak=args.polyak)
+        # Logging
         if len(ep_rewards) >= args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
@@ -395,7 +385,7 @@ if __name__ == "__main__":
                 writer.add_scalar("train/grads", np.mean(gradients), step)
                 losses, gradients = [], []
             ep_rewards, ep_lengths, ep_stats = [], [], []
-
+        # ---- Evaluate on separate envs -------
         if (step > 0 and step % (args.eval_steps * args.num_envs) == 0) or (step >= args.total_timesteps - 1):
             eval_obs, _ = eval_env.reset()
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
@@ -418,6 +408,7 @@ if __name__ == "__main__":
             writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
             if "smac" in args.env_type:
                 writer.add_scalar("eval/battle_won", np.mean(eval_ep_stats), step)
+    # ---- Save checkpoints -------
     if args.save_model:
         checkpoint = {"utility_network": utility_network.state_dict()}
         if args.normalize_obs:
@@ -430,7 +421,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-
+    # ---- Close loggings and envs -------
     writer.close()
     if args.use_wnb:
         wandb.finish()
