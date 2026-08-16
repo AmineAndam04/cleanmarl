@@ -1,9 +1,8 @@
 import copy
 import datetime
+import json
 import random
 from dataclasses import dataclass
-from multiprocessing import Pipe, Process
-from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -11,32 +10,44 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from env.lbf_wrapper import LBFWrapper
-from env.pettingzoo_wrapper import PettingZooWrapper
-from env.smaclite_wrapper import SMACliteWrapper
+from marl_envs.vec_envs import SubprocVectorEnv, SyncVectorEnv
+from marl_envs.wrappers import (
+    AddAgentIDVec,
+    NormalizeVecObservation,
+    NormalizeVecReward,
+    RecordEpisodeStatistics,
+)
 from torch.utils.tensorboard import SummaryWriter
 
 
 @dataclass
 class Args:
     # Environment
-    env_type: str = "smaclite"  # "pz"
-    """ pz(for Pettingzoo), smaclite (for SMAClite), lbf (for LBF) ... """
-    env_name: str = "3m"  # "simple_spread_v3" #"pursuit_v4"
+    env_type: str = "smaclite"
+    """ pz(for Pettingzoo), smaclite, lbf, rware, smac, smacv2 """
+    env_name: str = "3m"
     """ Name of the environment """
     env_family: str = "mpe"
     """ Env family when using pz"""
     num_envs: int = 4
     """ Number of parallel environments"""
+    use_subproc: bool = True
+    """ If true, put each env in a process, if not run num_envs in sequence"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
+    normalize_obs: bool = False
+    """ NNormalize the observations if True"""
+    normalize_reward: bool = False
+    """ Normalize the rewards if True"""
+    max_episode_steps: int = 150
+    "Maximum steps per episode"
     # Network
     hidden_dim: int = 64
     """ Hidden dimension"""
     hyper_dim: int = 64
     """ Hidden dimension of hyper-network"""
     num_layers: int = 1
-    """ Number of layers"""
+    """ Number of hidden layers"""
     # Training
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
@@ -45,7 +56,7 @@ class Args:
     buffer_size: int = 5000
     """ The number of episodes in the replay buffer"""
     batch_size: int = 32
-    """ Batch size"""
+    """ Number of sampled episodes"""
     minibatch_size: int = 6
     """ Mini Batch size"""
     n_epochs: int = 2
@@ -62,13 +73,11 @@ class Args:
     """ Polyak coefficient when using polyak averaging for target network update"""
     clip_gradients: float = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
-    normalize_reward: bool = False
-    """ Normalize the rewards if True"""
     start_e: float = 1
     """ The starting value of epsilon, for exploration"""
     end_e: float = 0.025
     """ The end value of epsilon, for exploration"""
-    exploration_fraction: float = 0.05
+    exploration_fraction: float = 0.25
     """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
@@ -100,18 +109,16 @@ class Qnetwrok(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
-        for i in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+        for _ in range(num_layer):
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def forward(self, x, avail_action=None):
         for layer in self.layers:
             x = layer(x)
         if avail_action is not None:
-            x = x.masked_fill(~avail_action, float("-inf"))
-        return x
+            x = x.masked_fill(~avail_action, -1e8)
+        return x.squeeze(-1)
 
 
 class MixingNetwork(nn.Module):
@@ -142,18 +149,6 @@ class MixingNetwork(nn.Module):
         return Q_tot
 
 
-class Batch(NamedTuple):
-    batch_obs: torch.Tensor
-    batch_action: torch.Tensor
-    batch_reward: torch.Tensor
-    batch_next_obs: torch.Tensor
-    batch_states: torch.Tensor
-    batch_next_states: torch.Tensor
-    batch_avail_action: torch.Tensor
-    batch_done: torch.Tensor
-    batch_mask: torch.Tensor
-
-
 class ReplayBuffer:
     def __init__(
         self,
@@ -162,7 +157,6 @@ class ReplayBuffer:
         obs_space,
         state_space,
         action_space,
-        normalize_reward=False,
         device="cpu",
     ):
         self.buffer_size = buffer_size
@@ -170,7 +164,6 @@ class ReplayBuffer:
         self.obs_space = obs_space
         self.state_space = state_space
         self.action_space = action_space
-        self.normalize_reward = normalize_reward
         self.device = device
         self.episodes = [None] * buffer_size
         self.pos = 0
@@ -178,61 +171,99 @@ class ReplayBuffer:
 
     def store(self, episode):
         for key, values in episode.items():
-            episode[key] = torch.from_numpy(np.stack(values)).float().to(self.device)
-        self.episodes[self.pos] = episode  # (obs,action,reward,done,next_obs,mask)
+            episode[key] = torch.from_numpy(np.stack(values)).to(self.device)
+        self.episodes[self.pos] = episode
         self.pos = (self.pos + 1) % self.buffer_size
         self.size = min(self.size + 1, self.buffer_size)
 
     def sample(self, batch_size):
-        indices = np.random.randint(0, self.size, size=batch_size)
+        indices = np.random.choice(self.size, size=batch_size, replace=False)
         batch = [self.episodes[i] for i in indices]
         lengths = [len(episode["obs"]) - 1 for episode in batch]
-        max_length = max(lengths)
-        obs = torch.zeros((batch_size, max_length, self.num_agents, self.obs_space)).to(
-            self.device
+        tot_length = sum(lengths)
+        obs = torch.zeros(tot_length, self.num_agents, self.obs_space).float().to(self.device)
+        actions = torch.zeros(tot_length, self.num_agents).int().to(self.device)
+        rewards = torch.zeros(tot_length).float().to(self.device)
+        next_obs = torch.zeros(tot_length, self.num_agents, self.obs_space).float().to(self.device)
+        states = torch.zeros(tot_length, self.state_space).float().to(self.device)
+        next_states = torch.zeros(tot_length, self.state_space).float().to(self.device)
+        next_avail_actions = (
+            torch.zeros(tot_length, self.num_agents, self.action_space).bool().to(self.device)
         )
-        avail_actions = torch.zeros(
-            (batch_size, max_length, self.num_agents, self.action_space)
-        ).to(self.device)
-        actions = torch.zeros((batch_size, max_length, self.num_agents)).to(self.device)
-        reward = torch.zeros((batch_size, max_length)).to(self.device)
-        next_obs = torch.zeros(
-            (batch_size, max_length, self.num_agents, self.obs_space)
-        ).to(self.device)
-        states = torch.zeros((batch_size, max_length, self.state_space)).to(self.device)
-        next_states = torch.zeros((batch_size, max_length, self.state_space)).to(
-            self.device
+        done = torch.zeros(tot_length).int().to(self.device)
+        position = 0
+        for episode, length in zip(batch, lengths):
+            obs[position : position + length] = episode["obs"][:-1]
+            actions[position : position + length] = episode["actions"]
+            rewards[position : position + length] = episode["reward"]
+            next_obs[position : position + length] = episode["obs"][1:]
+            states[position : position + length] = episode["states"][:-1]
+            next_states[position : position + length] = episode["states"][1:]
+            next_avail_actions[position : position + length] = episode["avail_actions"][1:]
+            done[position : position + length] = episode["done"]
+            position += length
+        permutation = torch.randperm(tot_length).to(self.device)
+        return (
+            obs[permutation],
+            actions[permutation],
+            rewards[permutation],
+            next_obs[permutation],
+            states[permutation],
+            next_states[permutation],
+            next_avail_actions[permutation],
+            done[permutation],
         )
-        done = torch.ones((batch_size, max_length)).to(self.device)
-        mask = torch.zeros(batch_size, max_length, dtype=torch.bool).to(self.device)
-        for i in range(batch_size):
-            length = lengths[i]
-            obs[i, :length] = batch[i]["obs"][:-1]
-            avail_actions[i, :length] = batch[i]["avail_actions"]
-            actions[i, :length] = batch[i]["actions"]
-            reward[i, :length] = batch[i]["reward"]
-            next_obs[i, :length] = batch[i]["obs"][1:]
-            states[i, :length] = batch[i]["states"][:-1]
-            next_states[i, :length] = batch[i]["states"][1:]
-            done[i, :length] = batch[i]["done"]
-            mask[i, :length] = 1
 
-        if self.normalize_reward:
-            mu = reward[mask].mean()
-            std = reward[mask].std()
-            reward[mask.bool()] = (reward[mask] - mu) / (std + 1e-6)
 
-        return Batch(
-            batch_obs=obs.float(),
-            batch_action=actions.long(),
-            batch_reward=reward.float(),
-            batch_next_obs=next_obs.float(),
-            batch_states=states.float(),
-            batch_next_states=next_states.float(),
-            batch_avail_action=avail_actions.bool(),
-            batch_done=done.float(),
-            batch_mask=mask,
-        )
+def make_env(args, kwargs):
+    def env_fn():
+        if args.env_type == "pz":
+            from marl_envs import PettingZooInterface  # noqa: PLC0415
+
+            env = PettingZooInterface(
+                family=args.env_family,
+                env_name=args.env_name,
+                max_episode_steps=args.max_episode_steps,
+                **kwargs,
+            )
+        elif args.env_type == "smaclite":
+            from marl_envs import SMACliteInterface  # noqa: PLC0415
+
+            env = SMACliteInterface(
+                env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs
+            )
+        elif args.env_type == "lbf":
+            from marl_envs import LBFInterface  # noqa: PLC0415
+
+            env = LBFInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
+        elif args.env_type == "rware":
+            from marl_envs import RWAREInterface  # noqa: PLC0415
+
+            env = RWAREInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
+        elif args.env_type == "smac":
+            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
+            from marl_envs import SMACInterface  # noqa: PLC0415
+
+            env = SMACInterface(env_name=args.env_name, seed=args.seed, **kwargs)
+            env = TimeLimit(
+                env=env,
+                max_episode_steps=args.max_episode_steps,
+            )
+        elif args.env_type == "smacv2":
+            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
+            from marl_envs import SMACv2Interface  # noqa: PLC0415
+
+            env = SMACv2Interface(env_name=args.env_name, seed=args.seed, **kwargs)
+            env = TimeLimit(
+                env=env,
+                max_episode_steps=args.max_episode_steps,
+            )
+        else:
+            raise ValueError(f"{args.env_type} nor supported for VDN")
+
+        return RecordEpisodeStatistics(env)
+
+    return env_fn
 
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
@@ -240,108 +271,23 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-def environment(env_type, env_name, env_family, agent_ids, kwargs):
-    if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
-    elif env_type == "smaclite":
-        env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
-    elif env_type == "lbf":
-        env = LBFWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
-
-    return env
-
-
 def norm_d(grads, d):
     norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
-    total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
+    total_norm_d = torch.linalg.vector_norm(torch.stack(norms), d)
     return total_norm_d
 
 
 def soft_update(target_net, utility_net, polyak):
     for target_param, param in zip(target_net.parameters(), utility_net.parameters()):
-        target_param.data.copy_(
-            polyak * param.data + (1.0 - polyak) * target_param.data
-        )
+        target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
 
 
-def get_mini_batches(batch, t, minibatch_size):
-    return (
-        batch.batch_obs[:, t : t + minibatch_size],
-        batch.batch_action[:, t : t + minibatch_size],
-        batch.batch_reward[:, t : t + minibatch_size],
-        batch.batch_next_obs[:, t : t + minibatch_size],
-        batch.batch_states[:, t : t + minibatch_size],
-        batch.batch_next_states[:, t : t + minibatch_size],
-        batch.batch_avail_action[:, t : t + minibatch_size],
-        batch.batch_done[:, t : t + minibatch_size],
-        batch.batch_mask[:, t : t + minibatch_size],
-    )
-
-
-class CloudpickleWrapper:
-    """
-    Uses cloudpickle to serialize contents (otherwise multiprocessing tries to use pickle)
-    """
-
-    def __init__(self, env):
-        self.env = env
-
-    def __getstate__(self):
-        import cloudpickle
-
-        return cloudpickle.dumps(self.env)
-
-    def __setstate__(self, env):
-        import pickle
-
-        self.env = pickle.loads(env)
-
-
-def env_worker(conn, env_serialized):
-    env = env_serialized.env
-    while True:
-        task, content = conn.recv()
-        if task == "reset":
-            obs, _ = env.reset(seed=content)
-            avail_actions = env.get_avail_actions()
-            state = env.get_state()
-            content = {"obs": obs, "avail_actions": avail_actions, "state": state}
-            conn.send(content)
-        elif task == "get_env_info":
-            content = {
-                "obs_size": env.get_obs_size(),
-                "action_size": env.get_action_size(),
-                "n_agents": env.n_agents,
-                "state_size": env.get_state_size(),
-            }
-            conn.send(content)
-        elif task == "sample":
-            actions = env.sample()
-            content = {"actions": actions}
-            conn.send(content)
-        elif task == "step":
-            next_obs, reward, done, truncated, infos = env.step(content)
-            avail_actions = env.get_avail_actions()
-            state = env.get_state()
-            content = {
-                "next_obs": next_obs,
-                "reward": reward,
-                "done": done,
-                "truncated": truncated,
-                "infos": infos,
-                "avail_actions": avail_actions,
-                "next_state": state,
-            }
-            conn.send(content)
-        elif task == "close":
-            env.close()
-            conn.close()
-            break
+def rms_state_dict(rms):
+    return {"mean": torch.as_tensor(rms.mean).cpu().clone(), "var": torch.as_tensor(rms.var).cpu().clone()}
 
 
 if __name__ == "__main__":
+    # ---- Prepare for training: seed, networks, optim ... -------
     args = tyro.cli(Args)
     # Set the seeds
     seed = args.seed
@@ -353,70 +299,51 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(seed)
     # Set device
     device = torch.device(args.device)
-    kwargs = {}  # {"render_mode":'human',"shared_reward":False}
-    ## Create the pipes to communicate between the main process (QMIX algorithm) and child processes (envs)
-    conns = [Pipe() for _ in range(args.num_envs)]
-    qmix_conns, env_conns = zip(*conns)
-    envs = [
-        CloudpickleWrapper(
-            environment(
-                env_type=args.env_type,
-                env_name=args.env_name,
-                env_family=args.env_family,
-                agent_ids=args.agent_ids,
-                kwargs=kwargs,
-            )
-        )
-        for _ in range(args.num_envs)
-    ]
-    processes = [
-        Process(target=env_worker, args=(env_conns[i], envs[i]))
-        for i in range(args.num_envs)
-    ]
-    for process in processes:
-        process.daemon = True
-        process.start()
-
-    eval_env = environment(
-        env_type=args.env_type,
-        env_name=args.env_name,
-        env_family=args.env_family,
-        agent_ids=args.agent_ids,
-        kwargs=kwargs,
-    )
-    ## initialize the networks
+    # Set the environment
+    env_fn = make_env(args, kwargs={})
+    env_parallelizer = SubprocVectorEnv if args.use_subproc else SyncVectorEnv
+    envs = env_parallelizer(env_fns=[env_fn for _ in range(args.num_envs)], auto_reset=False)
+    eval_env = SyncVectorEnv(env_fns=[env_fn for _ in range(args.num_eval_ep)], auto_reset=False)
+    if args.normalize_obs:
+        envs = NormalizeVecObservation(envs, normalize_state=False)
+        eval_env = NormalizeVecObservation(eval_env)
+        eval_env.set_wrapper_attr("update_running_mean", False)
+        eval_env.set_wrapper_attr("obs_rms", envs.get_wrapper_attr("obs_rms"))
+    if args.normalize_reward:
+        envs = NormalizeVecReward(envs, gamma=args.gamma)
+    if args.agent_ids:
+        envs = AddAgentIDVec(envs)
+        eval_env = AddAgentIDVec(eval_env)
+    # Initialize the netowrks
     utility_network = Qnetwrok(
-        input_dim=eval_env.get_obs_size(),
+        input_dim=envs.get_obs_size(),
         hidden_dim=args.hidden_dim,
         num_layer=args.num_layers,
-        output_dim=eval_env.get_action_size(),
+        output_dim=envs.get_action_size(),
     ).to(device)
     target_network = copy.deepcopy(utility_network).to(device)
     mixer = MixingNetwork(
-        n_agents=eval_env.n_agents,
-        s_dim=eval_env.get_state_size(),
+        n_agents=envs.n_agents,
+        s_dim=envs.get_state_size(),
         hidden_dim=args.hyper_dim,
     ).to(device)
     target_mixer = copy.deepcopy(mixer).to(device)
-
-    ## initialize the optimizer
+    # Initialize the optimizer
     optimizer = getattr(optim, args.optimizer)
     optimizer = optimizer(
         list(utility_network.parameters()) + list(mixer.parameters()),
         lr=args.learning_rate,
     )
-
-    ## initialize a shared replay buffer
+    # Initialize the replay buffer
     rb = ReplayBuffer(
         buffer_size=args.buffer_size,
-        obs_space=eval_env.get_obs_size(),
-        state_space=eval_env.get_state_size(),
-        action_space=eval_env.get_action_size(),
-        num_agents=eval_env.n_agents,
-        normalize_reward=args.normalize_reward,
+        obs_space=envs.get_obs_size(),
+        state_space=envs.get_state_size(),
+        action_space=envs.get_action_size(),
+        num_agents=envs.n_agents,
         device=device,
     )
-
+    # Logging
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
@@ -429,249 +356,170 @@ if __name__ == "__main__":
             config=vars(args),
             name=f"QMIX-multienvs-{run_name}",
         )
-    writer = SummaryWriter(f"{args.work_dir}/QMIX-multienvs-{run_name}")
+    log_dir = f"{args.work_dir}/QMIX-multienvs-{run_name}"
+    writer = SummaryWriter(log_dir)
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n{}".format(
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
         ),
     )
+    envs.reset(seed=seed)
+    eval_env.reset(seed=seed + 100)
     ep_rewards, ep_lengths, ep_stats = [], [], []
     losses, gradients = [], []
     num_episodes = 0
     step = 0
     while step < args.total_timesteps:
+        # ---- Collect num_envs episodes -------
         episodes = [
-            {
-                "obs": [],
-                "actions": [],
-                "reward": [],
-                "states": [],
-                "done": [],
-                "avail_actions": [],
-            }
+            {"obs": [], "actions": [], "reward": [], "states": [], "done": [], "avail_actions": []}
             for _ in range(args.num_envs)
         ]
 
-        for i, qmix_conn in enumerate(qmix_conns):
-            qmix_conn.send(("reset", seed + i))
-        contents = [qmix_conn.recv() for qmix_conn in qmix_conns]
-        obs = np.stack([content["obs"] for content in contents], axis=0)
-        avail_action = np.stack(
-            [content["avail_actions"] for content in contents], axis=0
-        )
-        state = [content["state"] for content in contents]
-        alive_envs = list(range(args.num_envs))
-
-        ep_reward, ep_length, ep_stat = (
-            [0] * args.num_envs,
-            [0] * args.num_envs,
-            [0] * args.num_envs,
-        )
-        while len(alive_envs) > 0:
+        obs, _ = envs.reset()
+        avail_action = envs.get_avail_actions()
+        state = envs.get_state()
+        while envs.get_env_mask().any():
+            env_mask = envs.get_env_mask()
             epsilon = linear_schedule(
-                args.start_e,
-                args.end_e,
-                args.exploration_fraction * args.total_timesteps,
-                step,
+                args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step
             )
-            if random.random() < epsilon:
-                for i in alive_envs:
-                    qmix_conns[i].send(("sample", None))
-                contents = [qmix_conns[i].recv() for i in alive_envs]
-                actions = np.array([content["actions"] for content in contents])
-            else:
-                num_alive_envs = len(alive_envs)
-                with torch.no_grad():
-                    q_values = utility_network(
-                        torch.from_numpy(obs).float().to(device),
-                        avail_action=torch.tensor(avail_action, dtype=torch.bool).to(
-                            device
-                        ),
-                    )
-                actions = torch.argmax(q_values, dim=-1).cpu().numpy()
-            # Send actions
-            for i, j in enumerate(alive_envs):
-                qmix_conns[j].send(("step", actions[i]))
-            contents = [qmix_conns[i].recv() for i in alive_envs]
-            next_obs = [content["next_obs"] for content in contents]
-            reward = [content["reward"] for content in contents]
-            done = [content["done"] for content in contents]
-            truncated = [content["truncated"] for content in contents]
-            avail_action = [content["avail_actions"] for content in contents]
-            infos = [content.get("infos") for content in contents]
-            next_state = [content["next_state"] for content in contents]
-
-            for i, j in enumerate(alive_envs):
-                episodes[j]["obs"].append(obs[i])
-                episodes[j]["actions"].append(actions[i])
-                episodes[j]["reward"].append(reward[i])
-                episodes[j]["done"].append(done[i])
-                episodes[j]["avail_actions"].append(avail_action[i])
-                episodes[j]["states"].append(state[i])
-                ep_reward[j] += reward[i]
-                ep_length[j] += 1
-
-            step += len(alive_envs)
-
-            obs = []
-            state = []
-            temp_avail_action = []
-
-            for i, j in enumerate(alive_envs[:]):
-                if done[i] or truncated[i]:
-                    episodes[j]["obs"].append(next_obs[i])
-                    episodes[j]["states"].append(next_state[i])
-                    alive_envs.remove(j)
-                    rb.store(episodes[j])
-                    episodes[j] = dict()
-                    if args.env_type == "smaclite":
-                        ep_stat[j] = infos[i]
-                else:
-                    obs.append(next_obs[i])
-                    temp_avail_action.append(avail_action[i])
-                    state.append(next_state[i])
-            if obs:
-                obs = np.stack(obs, axis=0)
-                avail_action = np.stack(temp_avail_action, axis=0)
-
+            with torch.no_grad():
+                q_values = utility_network(
+                    torch.from_numpy(obs).float().to(device),
+                    torch.from_numpy(avail_action).bool().to(device),
+                )
+            actions = q_values.argmax(dim=-1).cpu().numpy()
+            explore = np.random.random(actions.shape) < epsilon
+            if explore.any():
+                actions = np.where(explore, envs.sample(), actions)
+            # Step the environment
+            next_obs, reward, done, truncated, infos = envs.step(actions)
+            for i in np.nonzero(env_mask)[0]:
+                episodes[i]["obs"].append(obs[i])
+                episodes[i]["actions"].append(actions[i])
+                episodes[i]["reward"].append(reward[i])
+                episodes[i]["done"].append(done[i])
+                episodes[i]["avail_actions"].append(avail_action[i])
+                episodes[i]["states"].append(state[i])
+            step += env_mask.sum()
+            obs = next_obs
+            state = envs.get_state()
+            avail_action = envs.get_avail_actions()
+            to_store = np.logical_and(np.logical_or(done, truncated), env_mask)
+            for index in np.nonzero(to_store)[0]:
+                episodes[index]["obs"].append(obs[index])
+                episodes[index]["states"].append(state[index])
+                episodes[index]["avail_actions"].append(avail_action[index])
+                rb.store(episodes[index].copy())
+                ep_rewards.append(infos[index]["episode_stats"]["r"])
+                ep_lengths.append(infos[index]["episode_stats"]["l"])
+                if "smac" in args.env_type:
+                    ep_stats.append(infos[index]["battle_won"])
         num_episodes += args.num_envs
-        ep_rewards.extend(ep_reward)
-        ep_lengths.extend(ep_length)
-        ep_stats.extend(ep_stat)
-
+        # ---- Training loop -------
         if num_episodes > args.batch_size:
-            if num_episodes % args.train_freq == 0:
+            if (num_episodes // args.num_envs) % args.train_freq == 0:
                 for _ in range(args.n_epochs):
-                    batch = rb.sample(args.batch_size)
-                    loss = 0
-                    for t in range(0, batch.batch_obs.size(1), args.minibatch_size):
-                        (
-                            mb_obs,
-                            mb_action,
-                            mb_reward,
-                            mb_next_obs,
-                            mb_states,
-                            mb_next_states,
-                            mb_avail_action,
-                            mb_done,
-                            mb_mask,
-                        ) = get_mini_batches(batch, t, args.minibatch_size)
+                    # Sample a batch of episodes
+                    (
+                        b_obs,
+                        b_action,
+                        b_reward,
+                        b_next_obs,
+                        b_states,
+                        b_next_states,
+                        b_next_avail_action,
+                        b_done,
+                    ) = rb.sample(args.batch_size)
+                    # Train the networks
+                    for start in range(0, b_obs.size(0), args.minibatch_size):
+                        end = start + args.minibatch_size
                         with torch.no_grad():
                             q_next_max, _ = target_network(
-                                mb_next_obs,
-                                avail_action=mb_avail_action,
+                                b_next_obs[start:end],
+                                avail_action=b_next_avail_action[start:end],
                             ).max(dim=-1)
-                            q_tot_target = target_mixer(Q=q_next_max, s=mb_next_states)
-                            q_tot_target = q_tot_target.reshape(args.batch_size, -1)
+                            q_tot_target = target_mixer(Q=q_next_max, s=b_next_states[start:end]).reshape(-1)
                             targets = (
-                                mb_reward + args.gamma * (1 - mb_done) * q_tot_target
+                                b_reward[start:end] + args.gamma * (1 - b_done[start:end]) * q_tot_target
                             )
-
                         q_values = torch.gather(
-                            utility_network(mb_obs),
-                            dim=-1,
-                            index=mb_action.unsqueeze(-1),
+                            utility_network(b_obs[start:end]), dim=-1, index=b_action[start:end].unsqueeze(-1)
                         )
-                        q_values = q_values.reshape(
-                            args.batch_size, -1, eval_env.n_agents
-                        )
-                        q_tot = mixer(Q=q_values, s=mb_states).squeeze()
-                        q_tot = q_tot.reshape(args.batch_size, -1)
-                        loss += (
-                            F.mse_loss(targets[mb_mask], q_tot[mb_mask]) * mb_mask.sum()
-                        )
-                    loss /= batch.batch_mask.sum()
-                    optimizer.zero_grad()
-                    loss.backward()
-                    grads = [
-                        p.grad
-                        for p in list(utility_network.parameters())
-                        + list(mixer.parameters())
-                    ]
-                    qmix_gradient = norm_d(grads, 2)
-                    if args.clip_gradients > 0:
-                        torch.nn.utils.clip_grad_norm_(
-                            list(utility_network.parameters())
-                            + list(mixer.parameters()),
-                            args.clip_gradients,
-                        )
-                    optimizer.step()
-                    losses.append(loss.item())
-                    gradients.append(qmix_gradient.item())
-
+                        q_values = q_values.reshape(-1, envs.n_agents)
+                        q_tot = mixer(Q=q_values, s=b_states[start:end]).reshape(-1)
+                        loss = F.mse_loss(targets, q_tot)
+                        optimizer.zero_grad()
+                        loss.backward()
+                        grads = [
+                            p.grad for p in list(utility_network.parameters()) + list(mixer.parameters())
+                        ]
+                        qmix_gradient = norm_d(grads, 2)
+                        if args.clip_gradients > 0:
+                            torch.nn.utils.clip_grad_norm_(
+                                list(utility_network.parameters()) + list(mixer.parameters()),
+                                args.clip_gradients,
+                            )
+                        optimizer.step()
+                        losses.append(loss.item())
+                        gradients.append(qmix_gradient.item())
+            # Update target networks
             if (num_episodes // args.num_envs) % args.target_network_update_freq == 0:
-                soft_update(
-                    target_net=target_network,
-                    utility_net=utility_network,
-                    polyak=args.polyak,
-                )
-                soft_update(
-                    target_net=target_mixer, utility_net=mixer, polyak=args.polyak
-                )
+                soft_update(target_net=target_network, utility_net=utility_network, polyak=args.polyak)
+                soft_update(target_net=target_mixer, utility_net=mixer, polyak=args.polyak)
+        # Logging
         if (num_episodes // args.num_envs) % args.log_every == 0:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
             writer.add_scalar("rollout/epsilon", epsilon, step)
+            if "smac" in args.env_type:
+                writer.add_scalar("rollout/battle_won", np.mean(ep_stats), step)
             if len(losses) > 0:
                 writer.add_scalar("train/loss", np.mean(losses), step)
                 writer.add_scalar("train/grads", np.mean(gradients), step)
+                losses, gradients = [], []
             ep_rewards, ep_lengths, ep_stats = [], [], []
-            losses, gradients = [], []
-
-        if (
-            num_episodes // args.num_envs
-        ) % args.eval_steps == 0 or step >= args.total_timesteps - 1:
+        # ---- Evaluate on separate envs -------
+        if (num_episodes // args.num_envs) % args.eval_steps == 0 or step >= args.total_timesteps - 1:
             eval_obs, _ = eval_env.reset()
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
-            eval_ep, current_reward, current_ep_length = 0, 0, 0
-            while eval_ep < args.num_eval_ep:
+            while eval_env.get_env_mask().any():
+                env_mask = eval_env.get_env_mask()
                 with torch.no_grad():
                     q_values = utility_network(
-                        torch.from_numpy(eval_obs).float().to(device),
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
-                        .bool()
-                        .to(device),
+                        x=torch.from_numpy(eval_obs).float().to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
                     )
-                actions = torch.argmax(q_values, dim=-1).cpu().numpy()
-                next_obs_, reward, done, truncated, infos = eval_env.step(actions)
-                current_reward += reward
-                current_ep_length += 1
-                eval_obs = next_obs_
-                if done or truncated:
-                    eval_obs, _ = eval_env.reset()
-                    eval_ep_reward.append(current_reward)
-                    eval_ep_length.append(current_ep_length)
-                    eval_ep_stats.append(infos)
-                    current_reward, current_ep_length = 0, 0
-                    eval_ep += 1
+                actions = q_values.argmax(dim=-1).cpu().numpy()
+                eval_obs, reward, done, truncated, infos = eval_env.step(actions)
+                to_store = np.logical_and(np.logical_or(done, truncated), env_mask)
+                for index in np.nonzero(to_store)[0]:
+                    eval_ep_reward.append(infos[index]["episode_stats"]["r"])
+                    eval_ep_length.append(infos[index]["episode_stats"]["l"])
+                    if "smac" in args.env_type:
+                        eval_ep_stats.append(infos[index]["battle_won"])
             writer.add_scalar("eval/ep_reward", np.mean(eval_ep_reward), step)
-            writer.add_scalar("eval/std_ep_reward", np.std(eval_ep_reward), step)
             writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
-            if args.env_type == "smaclite":
-                writer.add_scalar(
-                    "eval/battle_won",
-                    np.mean([info["battle_won"] for info in eval_ep_stats]),
-                    step,
-                )
+            if "smac" in args.env_type:
+                writer.add_scalar("eval/battle_won", np.mean(eval_ep_stats), step)
+    # ---- Save checkpoints -------
     if args.save_model:
-        # Save the weights
-        qmix_model_path = f"{args.work_dir}/QMIX-multienvs-{run_name}/agent.pt"
-        torch.save(utility_network.state_dict(), qmix_model_path)
-        mixer_model_path = f"{args.work_dir}/QMIX-multienvs-{run_name}/mixer.pt"
-        torch.save(mixer.state_dict(), mixer_model_path)
-
-        # Save the args
-        import json
-        from dataclasses import asdict
-
-        qmix_args_path = f"{args.work_dir}/QMIX-multienvs-{run_name}/args.json"
-        with open(qmix_args_path, "w") as f:
-            json.dump(asdict(args), f, indent=2)
+        checkpoint = {"utility_network": utility_network.state_dict(), "mixer": mixer.state_dict()}
+        if args.normalize_obs:
+            checkpoint["obs_rms"] = rms_state_dict(envs.get_wrapper_attr("obs_rms"))
+            state_rms = envs.get_wrapper_attr("state_rms")
+            if state_rms is not None:
+                checkpoint["state_rms"] = rms_state_dict(state_rms)
+        if args.normalize_reward:
+            checkpoint["return_rms"] = rms_state_dict(envs.get_wrapper_attr("return_rms"))
+        torch.save(checkpoint, f"{log_dir}/agent.pt")
+        with open(f"{log_dir}/args.json", "w") as f:
+            json.dump(vars(args), f, indent=2)
+    # ---- Close loggings and envs -------
     writer.close()
     if args.use_wnb:
         wandb.finish()
-    for conn in qmix_conns:
-        conn.send(("close", None))
-    for p in processes:
-        p.join()
+    envs.close()
+    eval_env.close()
