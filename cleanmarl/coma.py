@@ -1,8 +1,8 @@
 import copy
 import datetime
+import json
 import random
 from dataclasses import dataclass
-from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -10,9 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from env.lbf_wrapper import LBFWrapper
-from env.pettingzoo_wrapper import PettingZooWrapper
-from env.smaclite_wrapper import SMACliteWrapper
+from marl_envs.vec_envs import SyncVectorEnv
+from marl_envs.wrappers import AddAgentIDVec, NormalizeVecObservation, RecordEpisodeStatistics
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
@@ -20,14 +19,20 @@ from torch.utils.tensorboard import SummaryWriter
 @dataclass
 class Args:
     # Environment
-    env_type: str = "smaclite"  # "pz"
-    """ pz(for Pettingzoo), smaclite (for SMAClite), lbf (for LBF) ... """
-    env_name: str = "3m"  # "simple_spread_v3" #"pursuit_v4"
+    env_type: str = "smaclite"
+    """ pz(for Pettingzoo), smaclite, lbf, rware, smac, smacv2 """
+    env_name: str = "3m"
     """ Name of the environment """
     env_family: str = "mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
     """ Include id (one-hot vector) at the agent of the observations"""
+    normalize_obs: bool = False
+    """ NNormalize the observations if True"""
+    normalize_reward: bool = False
+    """ Normalize the rewards if True"""
+    max_episode_steps: int = 150
+    "Maximum steps per episode"
     # Network
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
@@ -42,7 +47,7 @@ class Args:
     """ Total steps in the environment during training"""
     batch_size: int = 3
     """ Number of episodes to collect in each rollout"""
-    minibatch_size: int = 6
+    minibatch_size: int = 64
     """ Mini Batch size"""
     optimizer: str = "Adam"
     """ The optimizer"""
@@ -54,22 +59,18 @@ class Args:
     """ Discount factor"""
     td_lambda: float = 0.8
     """ TD(λ) discount factor"""
-    normalize_reward: bool = False
-    """ Normalize the rewards if True"""
     normalize_advantage: bool = True
     """ Normalize the advantage if True"""
-    normalize_return: bool = False
-    """ Normalize the returns if True"""
-    target_network_update_freq: int = 1
-    """ Update the target network each target_network_update_freq» step in the environment"""
-    polyak: float = 0.005
-    """ Polyak coefficient when using polyak averaging for target network update"""
     entropy_coef: float = 0.001
     """ Entropy coefficient """
     use_tdlamda: bool = True
     """ Use TD(λ) as a target for the critic, if False use n-step returns (n=nsteps) """
     nsteps: int = 1
     """ number of stpes when using n-step returns as a target for the critic"""
+    target_network_update_freq: int = 1
+    """ Update the target network each target_network_update_freq» step in the environment"""
+    polyak: float = 0.005
+    """ Polyak coefficient when using polyak averaging for target network update"""
     clip_gradients: float = -1
     """ 0< for no clipping and 0> if clipping at clip_gradients"""
     start_e: float = 0.5
@@ -103,16 +104,6 @@ class Args:
     """ Weights & Biases entity name"""
 
 
-class Batch(NamedTuple):
-    batch_obs: torch.Tensor
-    batch_action: torch.Tensor
-    batch_reward: torch.Tensor
-    batch_states: torch.Tensor
-    batch_avail_action: torch.Tensor
-    batch_done: torch.Tensor
-    batch_mask: torch.Tensor
-
-
 class RolloutBuffer:
     def __init__(
         self,
@@ -121,7 +112,6 @@ class RolloutBuffer:
         obs_space,
         state_space,
         action_space,
-        normalize_reward=False,
         device="cpu",
     ):
         self.buffer_size = buffer_size
@@ -129,71 +119,71 @@ class RolloutBuffer:
         self.obs_space = obs_space
         self.state_space = state_space
         self.action_space = action_space
-        self.normalize_reward = normalize_reward
         self.device = device
         self.episodes = [None] * buffer_size
         self.pos = 0
 
     def add(self, episode):
         for key, values in episode.items():
-            episode[key] = torch.from_numpy(np.stack(values)).float().to(self.device)
+            episode[key] = torch.from_numpy(np.stack(values))
+        self.compute_return(episode=episode)
         self.episodes[self.pos] = episode
         self.pos += 1
 
+    def compute_return(self, episode):
+        ## 2. Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
+        ## 2. or use TD n-steps
+        returns = torch.zeros_like(episode["actions"]).float()
+        ep_len = episode["obs"].size(0)
+        if args.use_tdlamda:
+            last_returns = 0
+            for t in reversed(range(ep_len)):
+                next_action_value = 0 if t == ep_len - 1 else episode["values"][t + 1]
+                returns[t] = last_returns = episode["reward"][t] + args.gamma * (
+                    args.td_lambda * last_returns + (1 - args.td_lambda) * next_action_value
+                )
+        else:
+            for t in range(ep_len):
+                return_t_n = episode["reward"][t : t + args.nsteps]
+                discounts = torch.tensor([args.gamma**i for i in range(return_t_n.size(-1))])
+                return_t_n = (return_t_n * discounts).sum(-1)
+                if t < (ep_len - args.nsteps):
+                    return_t_n = return_t_n + args.gamma**args.nsteps * episode["values"][t + args.nsteps]
+                returns[t] = return_t_n
+        episode["returns"] = returns
+        del episode["values"]
+
     def get_batch(self):
-        self.pos = 0
         lengths = [len(episode["obs"]) for episode in self.episodes]
-        max_length = max(lengths)
-        obs = torch.zeros(
-            (self.buffer_size, max_length, self.num_agents, self.obs_space)
-        ).to(self.device)
-        avail_actions = torch.zeros(
-            (self.buffer_size, max_length, self.num_agents, self.action_space)
-        ).to(self.device)
-        actions = torch.zeros((self.buffer_size, max_length, self.num_agents)).to(
-            self.device
-        )
-        reward = torch.zeros((self.buffer_size, max_length)).to(self.device)
-        states = torch.zeros((self.buffer_size, max_length, self.state_space)).to(
-            self.device
-        )
-        done = torch.ones((self.buffer_size, max_length)).to(self.device)
-        mask = torch.zeros(self.buffer_size, max_length, dtype=torch.bool).to(
-            self.device
-        )
-        for i in range(self.buffer_size):
-            length = lengths[i]
-            obs[i, :length] = self.episodes[i]["obs"]
-            avail_actions[i, :length] = self.episodes[i]["avail_actions"]
-            actions[i, :length] = self.episodes[i]["actions"]
-            reward[i, :length] = self.episodes[i]["reward"]
-            states[i, :length] = self.episodes[i]["states"]
-            done[i, :length] = self.episodes[i]["done"]
-            mask[i, :length] = 1
-        if self.normalize_reward:
-            reward = (reward - reward[mask].mean()) / (reward[mask].std() + 1e-6)
+        tot_length = sum(lengths)
+        obs = torch.zeros(tot_length, self.num_agents, self.obs_space).float().to(self.device)
+        avail_actions = torch.zeros(tot_length, self.num_agents, self.action_space).bool().to(self.device)
+        actions = torch.zeros(tot_length, self.num_agents).long().to(self.device)
+        rewards = torch.zeros(tot_length).float().to(self.device)
+        returns = torch.zeros(tot_length, self.num_agents).float().to(self.device)
+        states = torch.zeros(tot_length, self.state_space).float().to(self.device)
+        position = 0
+        for episode, length in zip(self.episodes, lengths):
+            obs[position : position + length] = episode["obs"]
+            avail_actions[position : position + length] = episode["avail_actions"]
+            actions[position : position + length] = episode["actions"]
+            rewards[position : position + length] = episode["reward"]
+            returns[position : position + length] = episode["returns"]
+            states[position : position + length] = episode["states"]
+            position += length
         self.episodes = [None] * self.buffer_size
-        return Batch(
-            batch_obs=obs.float(),
-            batch_action=actions.long(),
-            batch_reward=reward.float(),
-            batch_states=states.float(),
-            batch_avail_action=avail_actions.bool(),
-            batch_done=done.float(),
-            batch_mask=mask,
-        )
+        self.pos = 0
+        return obs, actions, rewards, returns, states, avail_actions
 
 
 class Actor(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer, output_dim):
         super().__init__()
         self.output_dim = output_dim
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for _ in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def act(self, x, eps=0, avail_action=None):
@@ -213,9 +203,7 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    def __init__(
-        self, input_dim, hidden_dim, num_layer, output_dim, num_agents
-    ) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer, output_dim, num_agents):
         super().__init__()
         self.num_agents = num_agents
         self.input_dim = input_dim
@@ -223,13 +211,12 @@ class Critic(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
         for _ in range(num_layer):
-            self.layers.append(
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
-            )
+            self.layers.append(nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU()))
         self.layers.append(nn.Sequential(nn.Linear(hidden_dim, output_dim)))
 
     def forward(self, state, observations, actions, avail_actions=None):
-        if state.dim() < 2:
+        unbatched = state.dim() < 2
+        if unbatched:
             state = state.unsqueeze(0)
             observations = observations.unsqueeze(0)
             actions = actions.unsqueeze(0)
@@ -240,44 +227,89 @@ class Critic(nn.Module):
             x = layer(x)
         if avail_actions is not None:
             x = x.masked_fill(~avail_actions, -1e9)
-        return x.squeeze()
+        return x.squeeze(0) if unbatched else x
 
     def coma_inputs(self, state, observations, actions):
-        coma_inputs = torch.zeros((state.size(0), self.num_agents, self.input_dim)).to(
-            state.device
-        )
+        coma_inputs = torch.zeros((state.size(0), self.num_agents, self.input_dim)).to(state.device)
         coma_inputs[:, :, : state.size(-1)] = state.unsqueeze(1)
-        coma_inputs[:, :, state.size(-1) : state.size(-1) + observations.size(-1)] = (
-            observations
-        )
+        coma_inputs[:, :, state.size(-1) : state.size(-1) + observations.size(-1)] = observations
         one_hot = F.one_hot(actions.long(), num_classes=self.output_dim).float()
-        mask = ~torch.eye(self.num_agents, dtype=torch.bool)
-        oh = one_hot.unsqueeze(1).expand(
-            state.size(0), self.num_agents, self.num_agents, self.output_dim
-        )
+        mask = ~torch.eye(self.num_agents).bool().to(state.device)
+        oh = one_hot.unsqueeze(1).expand(state.size(0), self.num_agents, self.num_agents, self.output_dim)
         oh = oh[mask.unsqueeze(0).expand(state.size(0), -1, -1)]
-        oh = oh.view(
-            state.size(0), self.num_agents, (self.num_agents - 1) * self.output_dim
-        )
+        oh = oh.view(state.size(0), self.num_agents, (self.num_agents - 1) * self.output_dim)
         coma_inputs[:, :, state.size(-1) + observations.size(-1) :] = oh
         return coma_inputs
+
+
+def make_env(args, kwargs, eval=False):
+    def env_fn():
+        if args.env_type == "pz":
+            from marl_envs import PettingZooInterface  # noqa: PLC0415
+
+            env = PettingZooInterface(
+                family=args.env_family,
+                max_episode_steps=args.max_episode_steps,
+                env_name=args.env_name,
+                **kwargs,
+            )
+        elif args.env_type == "smaclite":
+            from marl_envs import SMACliteInterface  # noqa: PLC0415
+
+            env = SMACliteInterface(
+                env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs
+            )
+        elif args.env_type == "lbf":
+            from marl_envs import LBFInterface  # noqa: PLC0415
+
+            env = LBFInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
+        elif args.env_type == "rware":
+            from marl_envs import RWAREInterface  # noqa: PLC0415
+
+            env = RWAREInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
+        elif args.env_type == "smac":
+            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
+            from marl_envs import SMACInterface  # noqa: PLC0415
+
+            env = SMACInterface(env_name=args.env_name, seed=args.seed, **kwargs)
+            env = TimeLimit(
+                env=env,
+                max_episode_steps=args.max_episode_steps,
+            )
+        elif args.env_type == "smacv2":
+            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
+            from marl_envs import SMACv2Interface  # noqa: PLC0415
+
+            env = SMACv2Interface(env_name=args.env_name, seed=args.seed, **kwargs)
+            env = TimeLimit(
+                env=env,
+                max_episode_steps=args.max_episode_steps,
+            )
+        else:
+            raise ValueError(f"{args.env_type} nor supported for this COMA")
+
+        env = RecordEpisodeStatistics(env)
+        if not eval:
+            if args.normalize_obs:
+                from marl_envs.wrappers import NormalizeObservation  # noqa: PLC0415
+
+                env = NormalizeObservation(env)
+            if args.normalize_reward:
+                from marl_envs.wrappers import NormalizeReward  # noqa: PLC0415
+
+                env = NormalizeReward(env, gamma=args.gamma)
+            if args.agent_ids:
+                from marl_envs.wrappers import AddAgentID  # noqa: PLC0415
+
+                env = AddAgentID(env)
+        return env
+
+    return env_fn
 
 
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
-
-
-def environment(env_type, env_name, env_family, agent_ids, kwargs):
-    if env_type == "pz":
-        env = PettingZooWrapper(
-            family=env_family, env_name=env_name, agent_ids=agent_ids, **kwargs
-        )
-    elif env_type == "smaclite":
-        env = SMACliteWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
-    elif env_type == "lbf":
-        env = LBFWrapper(map_name=env_name, agent_ids=agent_ids, **kwargs)
-    return env
 
 
 def norm_d(grads, d):
@@ -288,35 +320,20 @@ def norm_d(grads, d):
 
 def soft_update(target_net, critic_net, polyak):
     for target_param, param in zip(target_net.parameters(), critic_net.parameters()):
-        target_param.data.copy_(
-            polyak * param.data + (1.0 - polyak) * target_param.data
-        )
+        target_param.data.copy_(polyak * param.data + (1.0 - polyak) * target_param.data)
 
 
 def get_coma_critic_input_dim(env):
-    critic_input_dim = (
-        env.get_obs_size()
-        + env.get_state_size()
-        + (env.n_agents - 1) * env.get_action_size()
-    )
+    critic_input_dim = env.get_obs_size() + env.get_state_size() + (env.n_agents - 1) * env.get_action_size()
     return critic_input_dim
 
 
-def get_mini_batches(batch, t, minibatch_size):
-    return (
-        batch.batch_obs[:, t : t + minibatch_size].flatten(
-            0, 1
-        ),  # I flatten to be compatible with the critic
-        batch.batch_action[:, t : t + minibatch_size].flatten(0, 1),
-        batch.batch_reward[:, t : t + minibatch_size].flatten(0, 1),
-        batch.batch_states[:, t : t + minibatch_size].flatten(0, 1),
-        batch.batch_avail_action[:, t : t + minibatch_size].flatten(0, 1),
-        batch.batch_done[:, t : t + minibatch_size].flatten(0, 1),
-        batch.batch_mask[:, t : t + minibatch_size].flatten(0, 1),
-    )
+def rms_state_dict(rms):
+    return {"mean": torch.as_tensor(rms.mean).cpu().clone(), "var": torch.as_tensor(rms.var).cpu().clone()}
 
 
 if __name__ == "__main__":
+    # ---- Prepare for training: seed, networks, optim ... -------
     args = tyro.cli(Args)
     # Random seed
     seed = args.seed
@@ -328,31 +345,26 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(seed)
     # Set device
     device = torch.device(args.device)
-    ## import the environment
-    kwargs = {}  # {"render_mode":'human',"shared_reward":False}
-    env = environment(
-        env_type=args.env_type,
-        env_name=args.env_name,
-        env_family=args.env_family,
-        agent_ids=args.agent_ids,
-        kwargs=kwargs,
+    # Import the environment
+    env = make_env(args, kwargs={})()
+    eval_env = SyncVectorEnv(
+        env_fns=[make_env(args, kwargs={}, eval=True) for _ in range(args.num_eval_ep)], auto_reset=False
     )
-    eval_env = environment(
-        env_type=args.env_type,
-        env_name=args.env_name,
-        env_family=args.env_family,
-        agent_ids=args.agent_ids,
-        kwargs=kwargs,
-    )
-
-    ## Initialize the actor, critic and target-critic networks
+    if args.normalize_obs:  # Sync normalization statistics
+        eval_env = NormalizeVecObservation(eval_env)
+        eval_env.set_wrapper_attr("update_running_mean", False)
+        eval_env.set_wrapper_attr("obs_rms", env.get_wrapper_attr("obs_rms"))
+    if args.agent_ids:
+        eval_env = AddAgentIDVec(eval_env)
+    env.reset(seed=seed)
+    eval_env.reset(seed=seed + 100)
+    # Initialize the actor, critic and target-critic networks
     actor = Actor(
         input_dim=env.get_obs_size(),
         hidden_dim=args.actor_hidden_dim,
         num_layer=args.actor_num_layers,
         output_dim=env.get_action_size(),
     ).to(device)
-
     critic_input_dim = get_coma_critic_input_dim(env)
     critic = Critic(
         input_dim=critic_input_dim,
@@ -362,10 +374,20 @@ if __name__ == "__main__":
         num_agents=env.n_agents,
     ).to(device)
     target_critic = copy.deepcopy(critic).to(device)
+    # Initialize the optimizer
     Optimizer = getattr(optim, args.optimizer)
     actor_optimizer = Optimizer(actor.parameters(), lr=args.learning_rate_actor)
     critic_optimizer = Optimizer(critic.parameters(), lr=args.learning_rate_critic)
-
+    # Initialize the replay buffer
+    rb = RolloutBuffer(
+        buffer_size=args.batch_size,
+        obs_space=env.get_obs_size(),
+        state_space=env.get_state_size(),
+        action_space=env.get_action_size(),
+        num_agents=env.n_agents,
+        device=device,
+    )
+    # Logging
     time_token = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{args.env_type}__{args.env_name}__{args.exp_name}__{time_token}"
     if args.use_wnb:
@@ -378,243 +400,127 @@ if __name__ == "__main__":
             config=vars(args),
             name=f"COMA)-{run_name}",
         )
-    writer = SummaryWriter(f"{args.work_dir}/COMA-{run_name}")
+    log_dir = f"{args.work_dir}/COMA-{run_name}"
+    writer = SummaryWriter(log_dir)
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n{}".format(
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
         ),
     )
-
-    rb = RolloutBuffer(
-        buffer_size=args.batch_size,
-        obs_space=env.get_obs_size(),
-        state_space=env.get_state_size(),
-        action_space=env.get_action_size(),
-        num_agents=env.n_agents,
-        normalize_reward=args.normalize_reward,
-        device=device,
-    )
-    ep_rewards, ep_lengths, ep_stats = [], [], []
-    cr_losses, ac_losses, entropies, ac_gradients, cr_gradients = [], [], [], [], []
     step = 0
     training_step = 0
+    ep_rewards, ep_lengths, ep_stats = [], [], []
+    cr_losses, ac_losses, entropies, ac_gradients, cr_gradients = [], [], [], [], []
     while step < args.total_timesteps:
+        # ---- Collect some episodes -------
         num_episode = 0
-        epsilon = linear_schedule(
-            args.start_e, args.end_e, args.exploration_fraction, training_step
-        )
+        epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction, training_step)
         while num_episode < args.batch_size:
             episode = {
                 "obs": [],
                 "actions": [],
                 "reward": [],
                 "states": [],
-                "done": [],
                 "avail_actions": [],
+                "values": [],
             }
             obs, _ = env.reset()
-            ep_reward, ep_length = 0, 0
             done, truncated = False, False
             while not done and not truncated:
                 avail_action = env.get_avail_actions()
                 state = env.get_state()
                 with torch.no_grad():
+                    # Select actions
                     actions = actor.act(
                         torch.from_numpy(obs).float().to(device),
                         eps=epsilon,
                         avail_action=torch.from_numpy(avail_action).bool().to(device),
-                    ).cpu()
-                next_obs, reward, done, truncated, infos = env.step(
-                    actions.cpu().numpy()
-                )
-                ep_reward += reward
-                ep_length += 1
+                    )
+                    # Compute its value
+                    values = target_critic(
+                        state=torch.from_numpy(state).float().to(device),
+                        observations=torch.from_numpy(obs).float().to(device),
+                        actions=actions,
+                        avail_actions=torch.from_numpy(avail_action).bool().to(device),
+                    )
+                    value = torch.gather(values, dim=-1, index=actions.unsqueeze(-1)).squeeze(-1)
+                # Step the environment
+                next_obs, reward, done, truncated, infos = env.step(actions.cpu().numpy())
                 step += 1
 
                 episode["obs"].append(obs)
-                episode["actions"].append(actions)
+                episode["actions"].append(actions.cpu())
                 episode["reward"].append(reward)
-                episode["done"].append(done)
                 episode["avail_actions"].append(avail_action)
                 episode["states"].append(state)
-
+                episode["values"].append(value.cpu())
                 obs = next_obs
-
             rb.add(episode)
-            ep_rewards.append(ep_reward)
-            ep_lengths.append(ep_length)
-            if args.env_type == "smaclite":
-                ep_stats.append(infos)
             num_episode += 1
-
-        ## Collate episodes in buffer into single batch
-        batch = rb.get_batch()
-        ### 1. Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
-        return_lambda = torch.zeros_like(batch.batch_action).float().to(device)
-        if args.use_tdlamda:
-            with torch.no_grad():
-                for ep_idx in range(return_lambda.size(0)):
-                    ep_len = batch.batch_mask[ep_idx].sum()
-                    last_return_lambda = 0
-                    for t in reversed(range(ep_len)):
-                        if t == (ep_len - 1):
-                            next_action_value = 0
-                        else:
-                            next_action_value = target_critic(
-                                state=batch.batch_states[ep_idx, t + 1],
-                                observations=batch.batch_obs[ep_idx, t + 1],
-                                actions=batch.batch_action[ep_idx, t + 1],
-                                avail_actions=batch.batch_avail_action[ep_idx, t + 1],
-                            )
-                            next_action_value = torch.gather(
-                                next_action_value,
-                                dim=-1,
-                                index=batch.batch_action[ep_idx, t + 1].unsqueeze(-1),
-                            ).squeeze()
-                        return_lambda[ep_idx, t] = last_return_lambda = (
-                            batch.batch_reward[ep_idx, t]
-                            + args.gamma
-                            * (
-                                args.td_lambda * last_return_lambda
-                                + (1 - args.td_lambda) * next_action_value
-                            )
-                        )
-        else:
-            with torch.no_grad():
-                for ep_idx in range(return_lambda.size(0)):
-                    ep_len = batch.batch_mask[ep_idx].sum()
-                    for t in range(ep_len):
-                        if t < (ep_len - args.nsteps):
-                            return_t_n = batch.batch_reward[ep_idx, t : t + args.nsteps]
-                            discounts = torch.tensor(
-                                [args.gamma**i for i in range(return_t_n.size(-1))]
-                            )
-                            return_t_n = (return_t_n * discounts).sum(-1)
-                            action_value_t_n = target_critic(
-                                state=batch.batch_states[ep_idx, t + args.nsteps],
-                                observations=batch.batch_obs[ep_idx, t + args.nsteps],
-                                actions=batch.batch_action[ep_idx, t + args.nsteps],
-                                avail_actions=batch.batch_avail_action[
-                                    ep_idx, t + args.nsteps
-                                ],
-                            )
-                            action_value_t_n = torch.gather(
-                                action_value_t_n,
-                                dim=-1,
-                                index=batch.batch_action[
-                                    ep_idx, t + args.nsteps
-                                ].unsqueeze(-1),
-                            ).squeeze()
-                            return_t_n = (
-                                return_t_n + args.gamma**args.nsteps * action_value_t_n
-                            )
-                        else:
-                            return_t_n = batch.batch_reward[ep_idx, t:]
-                            discounts = torch.tensor(
-                                [args.gamma**i for i in range(return_t_n.size(-1))]
-                            )
-                            return_t_n = (return_t_n * discounts).sum(-1)
-                            return_t_n = return_t_n.expand(eval_env.n_agents)
-                        return_lambda[ep_idx, t] = return_t_n
-
-        if args.normalize_return:
-            ret_mu = return_lambda.mean(dim=-1)[batch.batch_mask].mean()
-            ret_std = return_lambda.mean(dim=-1)[batch.batch_mask].std()
-            return_lambda = (return_lambda - ret_mu) / ret_std
-        ### 2. Update the critic
-        cr_loss = 0
-        for t in range(0, batch.batch_obs.size(1), args.minibatch_size):
-            (
-                mb_obs,
-                mb_action,
-                _,
-                mb_states,
-                _,
-                _,
-                mb_mask,
-            ) = get_mini_batches(batch, t, args.minibatch_size)
-            b_q_values = critic(state=mb_states, observations=mb_obs, actions=mb_action)
-            b_q_values = torch.gather(b_q_values, dim=-1, index=mb_action.unsqueeze(-1))
-            b_q_values = b_q_values.reshape_as(mb_action)
-            q_targets = return_lambda[:, t : t + args.minibatch_size].flatten(0, 1)
-            critic_loss = F.mse_loss(b_q_values[mb_mask], q_targets[mb_mask])
-            cr_loss += critic_loss * (mb_mask.sum())
-
+            ep_rewards.append(infos["episode_stats"]["r"])
+            ep_lengths.append(infos["episode_stats"]["l"])
+            if "smac" in args.env_type:
+                ep_stats.append(infos.get("battle_won", False))
+        # ---- Training loop -------
+        ## Prepare the batch
+        b_obs, b_actions, b_rewards, b_returns, b_states, b_avail_actions = rb.get_batch()
+        ## Update critic and actor
+        num_samples = b_obs.size(0) * env.n_agents
+        ac_loss, entropy, cr_loss = 0, 0, 0
         critic_optimizer.zero_grad()
-        cr_loss = cr_loss / batch.batch_mask.sum()
-        cr_loss.backward()
-        critic_gradient = norm_d([p.grad for p in critic.parameters()], 2)
-        if args.clip_gradients > 0:
-            torch.nn.utils.clip_grad_norm_(
-                critic.parameters(), max_norm=args.clip_gradients
+        actor_optimizer.zero_grad()
+        for start in range(0, b_obs.size(0), args.minibatch_size):
+            end = start + args.minibatch_size
+            ## Critic loss
+            b_q_values = critic(
+                state=b_states[start:end], observations=b_obs[start:end], actions=b_actions[start:end]
             )
+            cr_values = torch.gather(b_q_values, dim=-1, index=b_actions[start:end].unsqueeze(-1))
+            critic_loss = F.mse_loss(cr_values.reshape(-1), b_returns[start:end].reshape(-1), reduction="sum")
+            critic_loss = critic_loss / num_samples
+            cr_loss += critic_loss.detach()
+            critic_loss.backward()
+            ## Actor loss
+            pi = actor.logits(b_obs[start:end], avail_action=b_avail_actions[start:end])
+            log_pi = torch.log(pi + 1e-8)
+            entropy_loss = -(pi * log_pi).sum()
+            ac_values = b_q_values.detach()
+            coma_baseline = pi * ac_values
+            coma_baseline = coma_baseline.sum(dim=-1)
+            current_q = torch.gather(ac_values, dim=-1, index=b_actions[start:end].unsqueeze(-1)).squeeze(-1)
+            advantage = (current_q - coma_baseline).detach()
+            if args.normalize_advantage:
+                advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
+            log_pi = torch.gather(log_pi, dim=-1, index=b_actions[start:end].unsqueeze(-1)).squeeze(-1)
+            actor_loss = (log_pi * advantage).sum()
+            actor_loss = -actor_loss - args.entropy_coef * entropy_loss
+            actor_loss /= num_samples
+            actor_loss.backward()
+            ac_loss += actor_loss.detach()
+            entropy += (entropy_loss / num_samples).detach()
+        critic_gradient = norm_d([p.grad for p in critic.parameters()], 2)
+        actor_gradient = norm_d([p.grad for p in actor.parameters()], 2)
+        if args.clip_gradients > 0:
+            torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=args.clip_gradients)
+            torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=args.clip_gradients)
         critic_optimizer.step()
+        actor_optimizer.step()
         training_step += 1
         cr_losses.append(cr_loss.item())
         cr_gradients.append(critic_gradient.item())
-        # Update target critic
-        if training_step % args.target_network_update_freq == 0:
-            soft_update(target_net=target_critic, critic_net=critic, polyak=args.polyak)
-        ### 3. Update actor
-        entropy = 0
-        ac_loss = 0
-        for t in range(0, batch.batch_obs.size(1), args.minibatch_size):
-            (
-                mb_obs,
-                mb_action,
-                mb_reward,
-                mb_states,
-                mb_avail_action,
-                mb_done,
-                mb_mask,
-            ) = get_mini_batches(batch, t, args.minibatch_size)
-            pi = actor.logits(mb_obs, avail_action=mb_avail_action)
-            log_pi = torch.log(pi + 1e-8)
-            entropy_loss = -(pi * log_pi).sum(dim=-1)
-            entropy_loss = entropy_loss[mb_mask].sum()
-            entropy += entropy_loss
-            q_values = critic(state=mb_states, observations=mb_obs, actions=mb_action)
-            q_values = q_values.clone().detach()
-            coma_baseline = pi * q_values
-            coma_baseline = coma_baseline.sum(dim=-1)
-            current_q = torch.gather(q_values, dim=-1, index=mb_action.unsqueeze(-1))
-            current_q = current_q.reshape_as(mb_action)
-            advantage = (current_q - coma_baseline).detach()
-            if args.normalize_advantage:
-                advantage = (advantage - advantage[mb_mask].mean()) / (
-                    advantage[mb_mask].std() + 1e-8
-                )
-            log_pi = torch.gather(log_pi, dim=-1, index=mb_action.unsqueeze(-1))
-            log_pi = log_pi.reshape_as(mb_action)
-            actor_loss = (log_pi * advantage).sum(-1)[mb_mask].sum()
-            actor_loss = -actor_loss - args.entropy_coef * entropy_loss
-            ac_loss += actor_loss
-        actor_optimizer.zero_grad()
-        ac_loss = ac_loss / batch.batch_mask.sum()
-        entropy = entropy / batch.batch_mask.sum()
-        ac_loss.backward()
-        actor_gradient = norm_d([p.grad for p in actor.parameters()], 2)
-        if args.clip_gradients > 0:
-            torch.nn.utils.clip_grad_norm_(
-                actor.parameters(), max_norm=args.clip_gradients
-            )
-        actor_optimizer.step()
         entropies.append(entropy.item())
         ac_losses.append(ac_loss.item())
         ac_gradients.append(actor_gradient.item())
-
+        # Update target critic
+        if training_step % args.target_network_update_freq == 0:
+            soft_update(target_net=target_critic, critic_net=critic, polyak=args.polyak)
         ## logging
-        if len(ep_rewards) > args.log_every:
+        if len(ep_rewards) >= args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
-            writer.add_scalar("rollout/epsilon", epsilon, step)
-            if args.env_type == "smaclite":
-                writer.add_scalar(
-                    "rollout/battle_won",
-                    np.mean([info["battle_won"] for info in ep_stats]),
-                    step,
-                )
+            if "smac" in args.env_type:
+                writer.add_scalar("rollout/battle_won", np.mean(ep_stats), step)
             ep_rewards, ep_lengths, ep_stats = [], [], []
             if len(ac_losses) > 0:
                 writer.add_scalar("train/critic_loss", np.mean(cr_losses), step)
@@ -629,57 +535,43 @@ if __name__ == "__main__":
                     [],
                     [],
                 )
+        # ---- Evaluate on separate envs -------
         if training_step % args.eval_steps == 0 or step >= args.total_timesteps - 1:
             eval_obs, _ = eval_env.reset()
-            eval_ep, current_reward, current_ep_length = 0, 0, 0
             eval_ep_reward, eval_ep_length, eval_ep_stats = [], [], []
-            while eval_ep < args.num_eval_ep:
+            while eval_env.get_env_mask().any():
+                env_mask = eval_env.get_env_mask()
                 with torch.no_grad():
                     logits = actor.logits(
                         torch.from_numpy(eval_obs).float().to(device),
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
-                        .bool()
-                        .to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
                     )
-                    actions = logits.argmax(-1)
-                next_obs_, reward, done, truncated, infos = eval_env.step(
-                    actions.cpu().numpy()
-                )
-                current_reward += reward
-                current_ep_length += 1
-                eval_obs = next_obs_
-                if done or truncated:
-                    eval_obs, _ = eval_env.reset()
-                    eval_ep_reward.append(current_reward)
-                    eval_ep_length.append(current_ep_length)
-                    eval_ep_stats.append(infos)
-                    current_reward, current_ep_length = 0, 0
-                    eval_ep += 1
+                    actions = logits.argmax(-1).cpu().numpy()
+                eval_obs, reward, done, truncated, infos = eval_env.step(actions)
+                to_store = np.logical_and(np.logical_or(done, truncated), env_mask)
+                for index in np.nonzero(to_store)[0]:
+                    eval_ep_reward.append(infos[index]["episode_stats"]["r"])
+                    eval_ep_length.append(infos[index]["episode_stats"]["l"])
+                    if "smac" in args.env_type:
+                        eval_ep_stats.append(infos[index].get("battle_won", False))
             writer.add_scalar("eval/ep_reward", np.mean(eval_ep_reward), step)
-            writer.add_scalar("eval/std_ep_reward", np.std(eval_ep_reward), step)
             writer.add_scalar("eval/ep_length", np.mean(eval_ep_length), step)
-            if args.env_type == "smaclite":
-                writer.add_scalar(
-                    "eval/battle_won",
-                    np.mean([info["battle_won"] for info in eval_ep_stats]),
-                    step,
-                )
-
+            if "smac" in args.env_type:
+                writer.add_scalar("eval/battle_won", np.mean(eval_ep_stats), step)
+    # ---- Save checkpoints -------
     if args.save_model:
-        # Save the weights
-        actor_model_path = f"{args.work_dir}/COMA-{run_name}/actor.pt"
-        torch.save(actor.state_dict(), actor_model_path)
-        critic_model_path = f"{args.work_dir}/COMA-{run_name}/critic.pt"
-        torch.save(critic.state_dict(), critic_model_path)
-
-        # Save the args
-        import json
-        from dataclasses import asdict
-
-        coma_args_path = f"{args.work_dir}/COMA-{run_name}/args.json"
-        with open(coma_args_path, "w") as f:
-            json.dump(asdict(args), f, indent=2)
-
+        checkpoint = {"actor": actor.state_dict(), "critic": critic.state_dict()}
+        if args.normalize_obs:
+            checkpoint["obs_rms"] = rms_state_dict(env.get_wrapper_attr("obs_rms"))
+            state_rms = env.get_wrapper_attr("state_rms")
+            if state_rms is not None:
+                checkpoint["state_rms"] = rms_state_dict(state_rms)
+        if args.normalize_reward:
+            checkpoint["return_rms"] = rms_state_dict(env.get_wrapper_attr("return_rms"))
+        torch.save(checkpoint, f"{log_dir}/agent.pt")
+        with open(f"{log_dir}/args.json", "w") as f:
+            json.dump(vars(args), f, indent=2)
+    # ---- Close loggings and envs -------
     writer.close()
     if args.use_wnb:
         wandb.finish()

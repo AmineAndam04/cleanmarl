@@ -305,7 +305,7 @@ if __name__ == "__main__":
     envs = env_parallelizer(env_fns=[env_fn for _ in range(args.num_envs)], auto_reset=False)
     eval_env = SyncVectorEnv(env_fns=[env_fn for _ in range(args.num_eval_ep)], auto_reset=False)
     if args.normalize_obs:
-        envs = NormalizeVecObservation(envs, normalize_state=False)
+        envs = NormalizeVecObservation(envs)
         eval_env = NormalizeVecObservation(eval_env)
         eval_env.set_wrapper_attr("update_running_mean", False)
         eval_env.set_wrapper_attr("obs_rms", envs.get_wrapper_attr("obs_rms"))
@@ -314,6 +314,8 @@ if __name__ == "__main__":
     if args.agent_ids:
         envs = AddAgentIDVec(envs)
         eval_env = AddAgentIDVec(eval_env)
+    envs.reset(seed=seed)
+    eval_env.reset(seed=seed + 100)
     # Initialize the netowrks
     utility_network = Qnetwrok(
         input_dim=envs.get_obs_size(),
@@ -364,8 +366,6 @@ if __name__ == "__main__":
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
         ),
     )
-    envs.reset(seed=seed)
-    eval_env.reset(seed=seed + 100)
     ep_rewards, ep_lengths, ep_stats = [], [], []
     losses, gradients = [], []
     num_episodes = 0
