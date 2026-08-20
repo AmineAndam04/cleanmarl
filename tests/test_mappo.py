@@ -2,8 +2,6 @@ import json
 import subprocess
 import sys
 
-import torch
-
 
 def test_mappo(tmp_path):
     subprocess.run(

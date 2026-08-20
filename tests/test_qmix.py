@@ -2,8 +2,6 @@ import json
 import subprocess
 import sys
 
-import torch
-
 
 def test_qmix(tmp_path):
     subprocess.run(

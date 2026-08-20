@@ -2,8 +2,6 @@ import json
 import subprocess
 import sys
 
-import torch
-
 
 def test_facmac(tmp_path):
     subprocess.run(

@@ -2,8 +2,6 @@ import json
 import subprocess
 import sys
 
-import torch
-
 
 def test_vdn(tmp_path):
     subprocess.run(
