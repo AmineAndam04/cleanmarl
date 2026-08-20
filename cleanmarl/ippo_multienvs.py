@@ -139,15 +139,14 @@ class RolloutBuffer:
     def compute_advantage_and_return(self, episode):
         return_lambda = torch.zeros_like(episode["actions"]).float()
         advantages = torch.zeros_like(episode["actions"]).float()
-        with torch.no_grad():
-            ep_len = episode["obs"].size(0)
-            last_return_lambda = 0
-            for t in reversed(range(ep_len)):
-                next_value = 0 if t == ep_len - 1 else episode["values"][t + 1]
-                return_lambda[t] = last_return_lambda = episode["reward"][t] + self.gamma * (
-                    self.td_lambda * last_return_lambda + (1 - self.td_lambda) * next_value
-                )
-                advantages[t] = return_lambda[t] - episode["values"][t]
+        ep_len = episode["obs"].size(0)
+        last_return_lambda = 0
+        for t in reversed(range(ep_len)):
+            next_value = 0 if t == ep_len - 1 else episode["values"][t + 1]
+            return_lambda[t] = last_return_lambda = episode["reward"][t] + self.gamma * (
+                self.td_lambda * last_return_lambda + (1 - self.td_lambda) * next_value
+            )
+            advantages[t] = return_lambda[t] - episode["values"][t]
         episode["returns"] = return_lambda
         episode["advantages"] = advantages
         del episode["values"]
