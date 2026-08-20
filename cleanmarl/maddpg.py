@@ -10,8 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from marl_envs.vec_envs import SyncVectorEnv
-from marl_envs.wrappers import AddAgentIDVec, NormalizeVecObservation, RecordEpisodeStatistics
+from marlbench.vec_envs import SyncVectorEnv
+from marlbench.wrappers import AddAgentIDVec, NormalizeVecObservation, RecordEpisodeStatistics
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -211,7 +211,7 @@ class Critic(nn.Module):
 def make_env(args, kwargs, eval=False):
     def env_fn():
         if args.env_type == "pz":
-            from marl_envs import PettingZooInterface  # noqa: PLC0415
+            from marlbench import PettingZooInterface  # noqa: PLC0415
 
             env = PettingZooInterface(
                 family=args.env_family,
@@ -220,22 +220,22 @@ def make_env(args, kwargs, eval=False):
                 **kwargs,
             )
         elif args.env_type == "smaclite":
-            from marl_envs import SMACliteInterface  # noqa: PLC0415
+            from marlbench import SMACliteInterface  # noqa: PLC0415
 
             env = SMACliteInterface(
                 env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs
             )
         elif args.env_type == "lbf":
-            from marl_envs import LBFInterface  # noqa: PLC0415
+            from marlbench import LBFInterface  # noqa: PLC0415
 
             env = LBFInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
         elif args.env_type == "rware":
-            from marl_envs import RWAREInterface  # noqa: PLC0415
+            from marlbench import RWAREInterface  # noqa: PLC0415
 
             env = RWAREInterface(env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs)
         elif args.env_type == "smac":
-            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
-            from marl_envs import SMACInterface  # noqa: PLC0415
+            from marlbench.wrappers import TimeLimit  # noqa: I001, PLC0415
+            from marlbench import SMACInterface  # noqa: PLC0415
 
             env = SMACInterface(env_name=args.env_name, seed=args.seed, **kwargs)
             env = TimeLimit(
@@ -243,8 +243,8 @@ def make_env(args, kwargs, eval=False):
                 max_episode_steps=args.max_episode_steps,
             )
         elif args.env_type == "smacv2":
-            from marl_envs.wrappers import TimeLimit  # noqa: I001, PLC0415
-            from marl_envs import SMACv2Interface  # noqa: PLC0415
+            from marlbench.wrappers import TimeLimit  # noqa: I001, PLC0415
+            from marlbench import SMACv2Interface  # noqa: PLC0415
 
             env = SMACv2Interface(env_name=args.env_name, seed=args.seed, **kwargs)
             env = TimeLimit(
@@ -257,15 +257,15 @@ def make_env(args, kwargs, eval=False):
         env = RecordEpisodeStatistics(env)
         if not eval:
             if args.normalize_obs:
-                from marl_envs.wrappers import NormalizeObservation  # noqa: PLC0415
+                from marlbench.wrappers import NormalizeObservation  # noqa: PLC0415
 
                 env = NormalizeObservation(env)
             if args.normalize_reward:
-                from marl_envs.wrappers import NormalizeReward  # noqa: PLC0415
+                from marlbench.wrappers import NormalizeReward  # noqa: PLC0415
 
                 env = NormalizeReward(env, gamma=args.gamma)
             if args.agent_ids:
-                from marl_envs.wrappers import AddAgentID  # noqa: PLC0415
+                from marlbench.wrappers import AddAgentID  # noqa: PLC0415
 
                 env = AddAgentID(env)
         return env

@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from marl_envs.vec_envs import SubprocVectorEnv, SyncVectorEnv
-from marl_envs.wrappers import (
+from marlbench.vec_envs import SubprocVectorEnv, SyncVectorEnv
+from marlbench.wrappers import (
     AddAgentIDVec,
     NormalizeVecObservation,
     NormalizeVecReward,
@@ -236,7 +236,7 @@ class Critic(nn.Module):
 def make_env(args, kwargs):
     def env_fn():
         if args.env_type == "pz":
-            from marl_envs import PettingZooInterface  # noqa: PLC0415
+            from marlbench import PettingZooInterface  # noqa: PLC0415
 
             env = PettingZooInterface(
                 family=args.env_family,
@@ -245,7 +245,7 @@ def make_env(args, kwargs):
                 **kwargs,
             )
         elif args.env_type == "mamujoco":
-            from marl_envs import MAmujocoInterface  # noqa: PLC0415
+            from marlbench import MAmujocoInterface  # noqa: PLC0415
 
             env = MAmujocoInterface(
                 env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs
