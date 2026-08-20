@@ -30,15 +30,15 @@ class Args:
     env_family: str = "mpe"
     """ Env family when using pz"""
     use_subproc: bool = True
-    """ If true, put each env in a process, if not run batch_size env in sequence"""
+    """ If true, put each env in a process, if not run n_episodes env in sequence"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
@@ -52,9 +52,9 @@ class Args:
     n_episodes: int = 3
     """ Number of episodes to collect in each rollout"""
     tbptt: int = 10
-    """Chunck size for Truncated Backpropagation Through Time tbptt"""
+    """ Chunk size for Truncated Backpropagation Through Time tbptt"""
     batch_size: int = 64
-    """Batch size to train MLP value function"""
+    """ Batch size to train MLP value function"""
     optimizer: str = "Adam"
     """ The optimizer"""
     learning_rate_actor: float = 0.0008
@@ -70,13 +70,13 @@ class Args:
     gamma: float = 0.99
     """ Discount factor"""
     td_lambda: float = 0.95
-    """ TD(λ) discount factor"""
+    """ TD(λ) parameter"""
     normalize_advantage: bool = False
     """ Normalize the advantage if True"""
     normalize_return: bool = False
     """ Normalize the returns if True"""
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -89,9 +89,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Logging steps """
+    """ Number of completed episodes accumulated before logging """
     eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» training steps"""
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -168,7 +168,6 @@ class RolloutBuffer:
         log_probs = torch.zeros(self.buffer_size, max_length, self.num_agents).float().to(self.device)
         advantages = torch.zeros(self.buffer_size, max_length).float().to(self.device)
         mask = torch.zeros(self.buffer_size, max_length, dtype=torch.bool).to(self.device)
-
         returns = torch.zeros(tot_length).float().to(self.device)
         states = torch.zeros(tot_length, self.state_space).to(self.device)
         for i in range(self.buffer_size):
@@ -184,7 +183,6 @@ class RolloutBuffer:
             returns[position : position + length] = episode["returns"]
             states[position : position + length] = episode["states"]
             position += length
-
         if self.normalize_advantage:
             advantages = (advantages - advantages[mask].mean()) / (advantages[mask].std() + 1e-8)
         if self.normalize_return:
@@ -245,7 +243,7 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer):
         super().__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
@@ -303,7 +301,7 @@ def make_env(args, kwargs):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for VDN")
+            raise ValueError(f"{args.env_type} not supported for this MAPPO")
 
         return RecordEpisodeStatistics(env)
 
@@ -399,11 +397,11 @@ if __name__ == "__main__":
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
         ),
     )
-    ep_rewards, ep_lengths, ep_stats = [], [], []
-    ac_losses, cr_losses, entropies = [], [], []
-    ac_gradients, cr_gradients = [], []
-    kl_divs, clipped_ratios = [], []
     step, num_episodes = 0, 0
+    kl_divs, clipped_ratios = [], []
+    ac_gradients, cr_gradients = [], []
+    ac_losses, cr_losses, entropies = [], [], []
+    ep_rewards, ep_lengths, ep_stats = [], [], []
     while step < args.total_timesteps:
         episodes = [
             {
@@ -417,7 +415,6 @@ if __name__ == "__main__":
             }
             for _ in range(args.n_episodes)
         ]
-
         obs, _ = envs.reset()
         h = None
         while envs.get_env_mask().any():
@@ -453,9 +450,8 @@ if __name__ == "__main__":
                 if "smac" in args.env_type:
                     ep_stats.append(infos[index].get("battle_won", False))
         num_episodes += args.n_episodes
-
         # ---- Training loop -------
-        ## Prepare the batch
+        # Prepare the batch
         (
             b_obs,
             b_actions,
@@ -492,13 +488,11 @@ if __name__ == "__main__":
                 )
                 log_ratio = current_logprob - b_log_probs[:, start:end]
                 ratio = torch.exp(log_ratio)
-                ## Compute PG the loss
                 pg_loss1 = b_advantages[:, start:end] * ratio
                 pg_loss2 = b_advantages[:, start:end] * torch.clamp(
                     ratio, 1 - args.ppo_clip, 1 + args.ppo_clip
                 )
                 pg_loss = torch.min(pg_loss1[b_mask[:, start:end]], pg_loss2[b_mask[:, start:end]]).sum()
-                # Compute entropy bonus
                 entropy_loss = entropy_loss[b_mask[:, start:end]].sum()
                 actor_loss = -pg_loss - args.entropy_coef * entropy_loss
                 actor_loss /= num_samples_actor
@@ -506,7 +500,6 @@ if __name__ == "__main__":
                 ac_loss += actor_loss.detach()
                 entropy += (entropy_loss / num_samples_actor).detach()
                 h = (h[0].detach(), h[1].detach())
-                # track kl distance
                 with torch.no_grad():
                     b_kl_divergence = ((ratio - 1) - log_ratio)[b_mask[:, start:end]].sum()
                     kl_div += b_kl_divergence / num_samples_actor
@@ -586,7 +579,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()
