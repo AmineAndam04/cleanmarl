@@ -26,13 +26,13 @@ class Args:
     env_family: str = "mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
@@ -58,7 +58,7 @@ class Args:
     gamma: float = 0.99
     """ Discount factor"""
     td_lambda: float = 0.8
-    """ TD(λ) discount factor"""
+    """ TD(λ) parameter"""
     normalize_advantage: bool = True
     """ Normalize the advantage if True"""
     entropy_coef: float = 0.001
@@ -66,19 +66,19 @@ class Args:
     use_tdlamda: bool = True
     """ Use TD(λ) as a target for the critic, if False use n-step returns (n=nsteps) """
     nsteps: int = 1
-    """ number of stpes when using n-step returns as a target for the critic"""
+    """ Number of steps used for n-step critic targets """
     target_network_update_freq: int = 1
-    """ Update the target network each target_network_update_freq» step in the environment"""
+    """ Update the target critic every target_network_update_freq training updates """
     polyak: float = 0.005
     """ Polyak coefficient when using polyak averaging for target network update"""
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     start_e: float = 0.5
     """ The starting value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
     end_e: float = 0.002
     """ The end value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
     exploration_fraction: float = 750
-    """ The number of training steps it takes from to go from start_e to  end_e"""
+    """ Number of training updates over which epsilon decays from start_e to end_e """
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -91,9 +91,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Log rollout stats every log_every episode"""
-    eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» training steps"""
+    """ Number of completed episodes accumulated before logging """
+    eval_steps: int = 10
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -286,7 +286,7 @@ def make_env(args, kwargs, eval=False):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for this COMA")
+            raise ValueError(f"{args.env_type} not supported for this COMA")
 
         env = RecordEpisodeStatistics(env)
         if not eval:
@@ -314,7 +314,7 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
 
 def norm_d(grads, d):
     norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
-    total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
+    total_norm_d = torch.linalg.vector_norm(torch.stack(norms), d)
     return total_norm_d
 
 
@@ -378,7 +378,7 @@ if __name__ == "__main__":
     Optimizer = getattr(optim, args.optimizer)
     actor_optimizer = Optimizer(actor.parameters(), lr=args.learning_rate_actor)
     critic_optimizer = Optimizer(critic.parameters(), lr=args.learning_rate_critic)
-    # Initialize the replay buffer
+    # Initialize the rollout buffer
     rb = RolloutBuffer(
         buffer_size=args.batch_size,
         obs_space=env.get_obs_size(),
@@ -398,7 +398,7 @@ if __name__ == "__main__":
             entity=args.wnb_entity,
             sync_tensorboard=True,
             config=vars(args),
-            name=f"COMA)-{run_name}",
+            name=f"COMA-{run_name}",
         )
     log_dir = f"{args.work_dir}/COMA-{run_name}"
     writer = SummaryWriter(log_dir)
@@ -448,7 +448,6 @@ if __name__ == "__main__":
                 # Step the environment
                 next_obs, reward, done, truncated, infos = env.step(actions.cpu().numpy())
                 step += 1
-
                 episode["obs"].append(obs)
                 episode["actions"].append(actions.cpu())
                 episode["reward"].append(reward)
@@ -571,7 +570,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()

@@ -33,13 +33,13 @@ class Args:
     use_subproc: bool = True
     """ If true, put each env in a process, if not run batch_size env in sequence"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
@@ -55,7 +55,7 @@ class Args:
     batch_size: int = 3
     """ Number of episodes to collect in parallel in each rollout"""
     tbptt: int = 10
-    """Chunck size for Truncated Backpropagation Through Time tbptt"""
+    """ Chunk size for Truncated Backpropagation Through Time tbptt"""
     optimizer: str = "Adam"
     """ The optimizer"""
     learning_rate_actor: float = 0.0005
@@ -67,17 +67,17 @@ class Args:
     entropy_coef: float = 0.001
     """ Entropy coefficient """
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     gamma: float = 0.99
     """ Discount factor"""
     use_tdlamda: bool = True
     """ Use TD(λ) as a target for the critic, if False use n-step returns (n=nsteps) """
     td_lambda: float = 0.8
-    """ TD(λ) discount factor"""
+    """ TD(λ) parameter"""
     nsteps: int = 1
-    """ number of stpes when using n-step returns as a target for the critic"""
+    """ Number of steps used for n-step critic targets """
     target_network_update_freq: int = 1
-    """ Update the target network each target_network_update_freq» step in the environment"""
+    """ Update the target critic every target_network_update_freq training updates """
     polyak: float = 0.005
     """ Polyak coefficient when using polyak averaging for target network update"""
     start_e: float = 0.5
@@ -85,7 +85,7 @@ class Args:
     end_e: float = 0.002
     """ The end value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
     exploration_fraction: float = 750
-    """ The number of training steps it takes from to go from start_e to  end_e"""
+    """ Number of training updates over which epsilon decays from start_e to end_e """
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -98,9 +98,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Log rollout stats every log_every episode"""
-    eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» training steps"""
+    """ Number of completed episodes accumulated before logging """
+    eval_steps: int = 10
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -138,8 +138,8 @@ class RolloutBuffer:
         self.pos += 1
 
     def compute_return(self, episode):
-        ## 2. Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
-        ## 2. or use TD n-steps
+        # 2. Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
+        # 2. or use TD n-steps
         returns = torch.zeros_like(episode["actions"]).float()
         ep_len = episode["obs"].size(0)
         if args.use_tdlamda:
@@ -308,7 +308,7 @@ def make_env(args, kwargs):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for VDN")
+            raise ValueError(f"{args.env_type} not supported for this COMA")
 
         return RecordEpisodeStatistics(env)
 
@@ -322,7 +322,7 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
 
 def norm_d(grads, d):
     norms = [torch.linalg.vector_norm(g.detach(), d) for g in grads]
-    total_norm_d = torch.linalg.vector_norm(torch.tensor(norms), d)
+    total_norm_d = torch.linalg.vector_norm(torch.stack(norms), d)
     return total_norm_d
 
 
@@ -437,7 +437,6 @@ if __name__ == "__main__":
             }
             for _ in range(args.batch_size)
         ]
-
         obs, _ = envs.reset()
         h = None
         while envs.get_env_mask().any():
@@ -465,7 +464,6 @@ if __name__ == "__main__":
             # Step the environment
             next_obs, reward, done, truncated, infos = envs.step(actions)
             step += env_mask.sum()
-
             for i in np.nonzero(env_mask)[0]:
                 episodes[i]["obs"].append(obs[i])
                 episodes[i]["actions"].append(actions[i])
@@ -482,9 +480,9 @@ if __name__ == "__main__":
                 if "smac" in args.env_type:
                     ep_stats.append(infos[index].get("battle_won", False))
         # ---- Training loop -------
-        ## Prepare the batch
+        # Prepare the batch
         b_obs, b_actions, b_rewards, b_returns, b_states, b_avail_actions, b_mask = rb.get_batch()
-        ## Update critic and actor
+        # Update critic and actor
         num_samples = b_mask.sum() * envs.n_agents
         ac_loss, entropy, cr_loss = 0, 0, 0
         critic_optimizer.zero_grad()
@@ -501,7 +499,7 @@ if __name__ == "__main__":
                 b_avail_actions[:, start:end],
                 b_mask[:, start:end].flatten(0, 1),
             )
-            ## Critic loss
+            # Critic loss
             b_q_values = critic(state=mb_states, observations=mb_obs.flatten(0, 1), actions=mb_actions)
             cr_values = torch.gather(b_q_values, dim=-1, index=mb_actions.unsqueeze(-1))
             critic_loss = F.mse_loss(
@@ -510,7 +508,7 @@ if __name__ == "__main__":
             critic_loss = critic_loss / num_samples
             cr_loss += critic_loss.detach()
             critic_loss.backward()
-            ## Actor loss
+            # Actor loss
             pi, h = actor.logits(
                 x=mb_obs.permute(0, 2, 1, 3).flatten(0, 1),
                 h=h,
@@ -551,7 +549,7 @@ if __name__ == "__main__":
         # Update target critic
         if training_step % args.target_network_update_freq == 0:
             soft_update(target_net=target_critic, critic_net=critic, polyak=args.polyak)
-        ## logging
+        # logging
         if len(ep_rewards) >= args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
@@ -612,7 +610,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()

@@ -33,13 +33,13 @@ class Args:
     use_subproc: bool = True
     """ If true, put each env in a process, if not run batch_size env in sequence"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
@@ -65,11 +65,11 @@ class Args:
     gamma: float = 0.99
     """ Discount factor"""
     td_lambda: float = 0.8
-    """ TD(λ) discount factor"""
+    """ TD(λ) parameter"""
     normalize_advantage: bool = True
     """ Normalize the advantage if True"""
     target_network_update_freq: int = 1
-    """ Update the target network each target_network_update_freq» step in the environment"""
+    """ Update the target critic every target_network_update_freq training updates """
     polyak: float = 0.005
     """ Polyak coefficient when using polyak averaging for target network update"""
     entropy_coef: float = 0.001
@@ -77,15 +77,15 @@ class Args:
     use_tdlamda: bool = True
     """ Use TD(λ) as a target for the critic, if False use n-step returns (n=nsteps) """
     nsteps: int = 1
-    """ number of stpes when using n-step returns as a target for the critic"""
+    """ Number of steps used for n-step critic targets """
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     start_e: float = 0.5
     """ The starting value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
     end_e: float = 0.002
     """ The end value of epsilon. See Architecture & Training in COMA's paper Sec. 5"""
     exploration_fraction: float = 750
-    """ The number of training steps it takes from to go from start_e to  end_e"""
+    """ Number of training updates over which epsilon decays from start_e to end_e """
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -98,9 +98,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Log rollout stats every log_every episode"""
+    """ Number of completed episodes accumulated before logging """
     eval_steps: int = 10
-    """ Evaluate the policy each «eval_steps» training steps"""
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -138,8 +138,8 @@ class RolloutBuffer:
         self.pos += 1
 
     def compute_return(self, episode):
-        ## 2. Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
-        ## 2. or use TD n-steps
+        # 2. Compute TD(λ) using "Reconciling λ-Returns with Experience Replay"(https://arxiv.org/pdf/1810.09967 Equation 3)
+        # 2. or use TD n-steps
         returns = torch.zeros_like(episode["actions"]).float()
         ep_len = episode["obs"].size(0)
         if args.use_tdlamda:
@@ -293,7 +293,7 @@ def make_env(args, kwargs):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for VDN")
+            raise ValueError(f"{args.env_type} not supported for this COMA")
 
         return RecordEpisodeStatistics(env)
 
@@ -355,7 +355,7 @@ if __name__ == "__main__":
         eval_env = AddAgentIDVec(eval_env)
     envs.reset(seed=seed)
     eval_env.reset(seed=seed + 100)
-    ## Initialize the actor, critic and target-critic networks
+    # Initialize the actor, critic and target-critic networks
     actor = Actor(
         input_dim=eval_env.get_obs_size(),
         hidden_dim=args.actor_hidden_dim,
@@ -395,7 +395,7 @@ if __name__ == "__main__":
             entity=args.wnb_entity,
             sync_tensorboard=True,
             config=vars(args),
-            name=f"COMA-multienvs--{run_name}",
+            name=f"COMA-multienvs-{run_name}",
         )
     log_dir = f"{args.work_dir}/COMA-multienvs-{run_name}"
     writer = SummaryWriter(log_dir)
@@ -405,7 +405,6 @@ if __name__ == "__main__":
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
         ),
     )
-
     step = 0
     training_step = 0
     ep_rewards, ep_lengths, ep_stats = [], [], []
@@ -414,17 +413,9 @@ if __name__ == "__main__":
         # ---- Collect some episodes -------
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction, training_step)
         episodes = [
-            {
-                "obs": [],
-                "actions": [],
-                "reward": [],
-                "states": [],
-                "avail_actions": [],
-                "values": [],
-            }
+            {"obs": [], "actions": [], "reward": [], "states": [], "avail_actions": [], "values": []}
             for _ in range(args.batch_size)
         ]
-
         obs, _ = envs.reset()
         while envs.get_env_mask().any():
             env_mask = envs.get_env_mask()
@@ -449,7 +440,6 @@ if __name__ == "__main__":
             # Step the environment
             next_obs, reward, done, truncated, infos = envs.step(actions)
             step += env_mask.sum()
-
             for i in np.nonzero(env_mask)[0]:
                 episodes[i]["obs"].append(obs[i])
                 episodes[i]["actions"].append(actions[i])
@@ -466,16 +456,16 @@ if __name__ == "__main__":
                 if "smac" in args.env_type:
                     ep_stats.append(infos[index].get("battle_won", False))
         # ---- Training loop -------
-        ## Prepare the batch
+        # Prepare the batch
         b_obs, b_actions, b_rewards, b_returns, b_states, b_avail_actions = rb.get_batch()
-        ## Update critic and actor
+        # Update critic and actor
         num_samples = b_obs.size(0) * envs.n_agents
         ac_loss, entropy, cr_loss = 0, 0, 0
         critic_optimizer.zero_grad()
         actor_optimizer.zero_grad()
         for start in range(0, b_obs.size(0), args.minibatch_size):
             end = start + args.minibatch_size
-            ## Critic loss
+            # Critic loss
             b_q_values = critic(
                 state=b_states[start:end], observations=b_obs[start:end], actions=b_actions[start:end]
             )
@@ -484,7 +474,7 @@ if __name__ == "__main__":
             critic_loss = critic_loss / num_samples
             cr_loss += critic_loss.detach()
             critic_loss.backward()
-            ## Actor loss
+            # Actor loss
             pi = actor.logits(b_obs[start:end], avail_action=b_avail_actions[start:end])
             log_pi = torch.log(pi + 1e-8)
             entropy_loss = -(pi * log_pi).sum()
@@ -518,7 +508,7 @@ if __name__ == "__main__":
         # Update target critic
         if training_step % args.target_network_update_freq == 0:
             soft_update(target_net=target_critic, critic_net=critic, polyak=args.polyak)
-        ## logging
+        # logging
         if len(ep_rewards) >= args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
@@ -574,7 +564,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()
