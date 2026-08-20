@@ -27,6 +27,7 @@ dependencies = [
     "lbforaging==2.0.0",
     "smaclite @ git+https://github.com/uoe-agents/smaclite",
     "rtree==1.4.1",
+    "marlbench==0.0.3",
     "setuptools>=80.9.0",
 ]
 
