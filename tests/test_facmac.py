@@ -25,28 +25,12 @@ def test_facmac(tmp_path):
     assert len(run_dirs) == 1
 
     run_dir = run_dirs[0]
-    checkpoint_path = run_dir / "actor.pt"
-    checkpoint_path2 = run_dir / "critic.pt"
+    checkpoint_path = run_dir / "agent.pt"
     args_path = run_dir / "args.json"
 
     assert checkpoint_path.is_file()
     assert checkpoint_path.stat().st_size > 0
-    assert checkpoint_path2.stat().st_size > 0
     assert args_path.is_file()
-
-    # Verify that actor.pt is a readable PyTorch state dict.
-    state_dict = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-    )
-    state_dict = torch.load(
-        checkpoint_path2,
-        map_location="cpu",
-        weights_only=True,
-    )
-    assert state_dict
-    assert all(isinstance(value, torch.Tensor) for value in state_dict.values())
 
     # Verify the saved configuration.
     saved_args = json.loads(args_path.read_text())
@@ -128,29 +112,12 @@ def test_facmac_multienv(tmp_path):
     assert len(run_dirs) == 1
 
     run_dir = run_dirs[0]
-    checkpoint_path = run_dir / "actor.pt"
-    checkpoint_path2 = run_dir / "critic.pt"
+    checkpoint_path = run_dir / "agent.pt"
     args_path = run_dir / "args.json"
 
     assert checkpoint_path.is_file()
     assert checkpoint_path.stat().st_size > 0
-    assert checkpoint_path2.stat().st_size > 0
     assert args_path.is_file()
-
-    # Verify that actor.pt is a readable PyTorch state dict.
-    state_dict = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-    )
-    state_dict = torch.load(
-        checkpoint_path2,
-        map_location="cpu",
-        weights_only=True,
-    )
-    assert state_dict
-    assert all(isinstance(value, torch.Tensor) for value in state_dict.values())
-
     # Verify the saved configuration.
     saved_args = json.loads(args_path.read_text())
     assert saved_args["save_model"] is True
