@@ -35,13 +35,13 @@ class Args:
     use_subproc: bool = True
     """ If true, put each env in a process, if not run num_envs in sequence"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
@@ -59,7 +59,7 @@ class Args:
     buffer_size: int = 5000
     """ The number of episodes in the replay buffer"""
     batch_size: int = 10
-    """ Batch size"""
+    """ Number of sampled episodes"""
     minibatch_size: int = 6
     """ Mini Batch size"""
     epochs: int = 1
@@ -71,19 +71,19 @@ class Args:
     learning_rate_critic: float = 0.0008
     """ Learning rate for the critic"""
     target_network_update_freq: int = 1
-    """ Update the target network each target_network_update_freq» step in the environment"""
+    """ Update the target networks every target_network_update_freq episodes"""
     polyak: float = 0.005
-    """ Polyak coefficient when using polyak averaging for target network update"""
+    """ Polyak coefficient for target network update"""
     gamma: float = 0.99
     """ Discount factor"""
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     start_e: float = 0.5
     """ The starting value of epsilon"""
     end_e: float = 0.002
     """ The end value of epsilon"""
     exploration_fraction: float = 750
-    """ The number of training steps it takes from to go from start_e to  end_e"""
+    """ Number of completed episodes over which epsilon decays from start_e to end_e"""
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -96,9 +96,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Logging steps """
+    """ Number of completed episodes accumulated before logging """
     eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» steps"""
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -110,7 +110,7 @@ class Args:
 
 
 class Actor(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer, output_dim):
         super().__init__()
         self.output_dim = output_dim
         self.layers = nn.ModuleList()
@@ -139,7 +139,7 @@ class Actor(nn.Module):
 
 
 class Qnetwrok(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer):
         super().__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
@@ -285,7 +285,7 @@ def make_env(args, kwargs):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for VDN")
+            raise ValueError(f"{args.env_type} not supported for this FACMAC")
 
         return RecordEpisodeStatistics(env)
 
@@ -342,7 +342,7 @@ if __name__ == "__main__":
         eval_env = AddAgentIDVec(eval_env)
     envs.reset(seed=seed)
     eval_env.reset(seed=seed + 100)
-    # Initialize the netowrks
+    # Initialize the networks
     actor = Actor(
         input_dim=envs.get_obs_size(),
         hidden_dim=args.actor_hidden_dim,
@@ -418,7 +418,7 @@ if __name__ == "__main__":
                     eps=epsilon,
                     avail_action=torch.from_numpy(avail_action).bool().to(device),
                     hard=True,
-                ).cpu()  ## These are one hot-vectors
+                ).cpu()
                 if epsilon > 0:
                     actions_to_take = actions.clone()
                     actions = F.one_hot(actions.long(), num_classes=envs.get_action_size())
@@ -435,7 +435,6 @@ if __name__ == "__main__":
                 episodes[i]["states"].append(state[i])
                 episodes[i]["done"].append(done[i])
                 episodes[i]["avail_actions"].append(avail_action[i])
-
             obs = next_obs
             state = envs.get_state()
             avail_action = envs.get_avail_actions()
@@ -479,11 +478,11 @@ if __name__ == "__main__":
                             avail_action=b_next_avail_actions[start:end],
                             hard=True,
                         )
-                        qvals_from_taget_utility = target_critic(
+                        qvals_from_target_utility = target_critic(
                             torch.cat((b_next_obs[start:end], actions_from_target_actor), dim=-1)
                         )
                         q_tot_from_target_mixer = target_mixer(
-                            Q=qvals_from_taget_utility, s=b_next_states[start:end]
+                            Q=qvals_from_target_utility, s=b_next_states[start:end]
                         ).reshape(-1)
                         targets = (
                             b_reward[start:end]
@@ -517,7 +516,7 @@ if __name__ == "__main__":
                 cr_gradients.append(critic_gradient.item())
                 ac_losses.append(ac_loss.item())
                 ac_gradients.append(actor_gradient.item())
-            # Update target actor and critic
+            # Update target networks
             if (num_episodes // args.num_envs) % args.target_network_update_freq == 0:
                 soft_update(target_net=target_actor, utility_net=actor, polyak=args.polyak)
                 soft_update(target_net=target_critic, utility_net=critic, polyak=args.polyak)
@@ -571,7 +570,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()

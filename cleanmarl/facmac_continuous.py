@@ -19,19 +19,19 @@ from torch.utils.tensorboard import SummaryWriter
 class Args:
     # Environment
     env_type: str = "pz"
-    """ Pettingzoo, ... """
+    """ pz, mamujoco ... """
     env_name: str = "multiwalker_v9"
     """ Name of the environment """
     env_family: str = "sisl"
     """ Env family when using pz"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     actor_hidden_dim: int = 64
     """ Hidden dimension of actor network"""
@@ -53,7 +53,7 @@ class Args:
     minibatch_size: int = 6
     """ Mini Batch size"""
     train_freq: int = 1
-    """ Train the network each «train_freq» step in the environment"""
+    """ Train every train_freq episodes"""
     optimizer: str = "Adam"
     """ The optimizer"""
     learning_rate_actor: float = 0.00001
@@ -63,11 +63,11 @@ class Args:
     gamma: float = 0.99
     """ Discount factor"""
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     target_network_update_freq: int = 1
-    """ Update the target network each target_network_update_freq» step in the environment"""
+    """ Update the target networks every target_network_update_freq episodes"""
     polyak: float = 0.005
-    """ Polyak coefficient when using polyak averaging for target network update"""
+    """ Polyak coefficient for target network update"""
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -80,9 +80,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Logging steps """
+    """ Number of completed episodes accumulated before logging """
     eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» steps"""
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -94,7 +94,7 @@ class Args:
 
 
 class Actor(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer, output_dim):
         super().__init__()
         self.output_dim = output_dim
         self.layers = nn.ModuleList()
@@ -110,7 +110,7 @@ class Actor(nn.Module):
 
 
 class Qnetwrok(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer):
         super().__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
@@ -224,7 +224,7 @@ def make_env(args, kwargs, eval=False):
                 env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for VDN")
+            raise ValueError(f"{args.env_type} not supported for this FACMAC")
 
         env = RecordEpisodeStatistics(env)
         if not eval:
@@ -362,7 +362,6 @@ if __name__ == "__main__":
             episode["done"].append(done or truncated)
             episode["states"].append(state)
             obs = next_obs
-
         # Store last step
         episode["obs"].append(obs)
         episode["states"].append(env.get_state())
@@ -393,11 +392,11 @@ if __name__ == "__main__":
                     end = start + args.minibatch_size
                     with torch.no_grad():
                         actions_from_target_actor = target_actor.act(b_next_obs[start:end])
-                        qvals_from_taget_utility = target_critic(
+                        qvals_from_target_utility = target_critic(
                             torch.cat((b_next_obs[start:end], actions_from_target_actor), dim=-1)
                         )
                         q_tot_from_target_mixer = target_mixer(
-                            Q=qvals_from_taget_utility, s=b_next_states[start:end]
+                            Q=qvals_from_target_utility, s=b_next_states[start:end]
                         ).reshape(-1)
                         targets = (
                             b_reward[start:end]
@@ -413,7 +412,6 @@ if __name__ == "__main__":
                     torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=args.clip_gradients)
                     torch.nn.utils.clip_grad_norm_(mixer.parameters(), max_norm=args.clip_gradients)
                 critic_optimizer.step()
-
                 ## Actor loss
                 for start in range(0, b_obs.size(0), args.minibatch_size):
                     end = start + args.minibatch_size
@@ -431,7 +429,7 @@ if __name__ == "__main__":
                 cr_gradients.append(critic_gradient.item())
                 ac_losses.append(ac_loss.item())
                 ac_gradients.append(actor_gradient.item())
-            # Update target actor and critic
+            # Update target networks
             if num_episodes % args.target_network_update_freq == 0:
                 soft_update(target_net=target_actor, utility_net=actor, polyak=args.polyak)
                 soft_update(target_net=target_critic, utility_net=critic, polyak=args.polyak)
@@ -475,7 +473,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()
