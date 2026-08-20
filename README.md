@@ -16,6 +16,8 @@
 
 We provide more details in our [documentation](https://cleanmarl-docs.readthedocs.io/en/latest/).
 
+Check the `old_jax` branch for JAX implementations (non-jax envs only).
+
 ## Quick Start
 
 Prerequisites:
