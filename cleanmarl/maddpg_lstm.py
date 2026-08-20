@@ -25,18 +25,16 @@ class Args:
     env_family: str = "mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
-    actor_num_layers: int = 2
-    """ Number of hidden layers of actor network"""
     critic_hidden_dim: int = 128
     """ Hidden dimension of critic network"""
     critic_num_layers: int = 1
@@ -47,11 +45,11 @@ class Args:
     buffer_size: int = 5000
     """ The number of episodes in the replay buffer"""
     batch_size: int = 10
-    """ Batch size"""
+    """ Number of sampled episodes"""
     tbptt: int = 10
-    """Chunck size for Truncated Backpropagation Through Time tbptt"""
+    """ Chunk size for Truncated Backpropagation Through Time tbptt"""
     train_freq: int = 1
-    """ Train the network each «train_freq» step in the environment"""
+    """ Train every train_freq episodes"""
     optimizer: str = "Adam"
     """ The optimizer"""
     learning_rate_actor: float = 0.0003
@@ -61,11 +59,11 @@ class Args:
     gamma: float = 0.99
     """ Discount factor"""
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     target_network_update_freq: int = 1
-    """ Update the target network each target_network_update_freq» step in the environment"""
+    """ Update the target networks every target_network_update_freq episodes"""
     polyak: float = 0.005
-    """ Polyak coefficient when using polyak averaging for target network update"""
+    """ Polyak coefficient for target network update"""
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -78,9 +76,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Logging steps """
+    """ Number of completed episodes accumulated before logging """
     eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» steps"""
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -199,7 +197,7 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim, num_agents) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer, output_dim, num_agents):
         super().__init__()
         self.num_agents = num_agents
         self.input_dim = input_dim
@@ -278,7 +276,7 @@ def make_env(args, kwargs, eval=False):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for VDN")
+            raise ValueError(f"{args.env_type} not supported for this MADDPG")
 
         env = RecordEpisodeStatistics(env)
         if not eval:
@@ -380,7 +378,7 @@ if __name__ == "__main__":
             entity=args.wnb_entity,
             sync_tensorboard=True,
             config=vars(args),
-            name=f"MADDPG-lstm--{run_name}",
+            name=f"MADDPG-lstm-{run_name}",
         )
     log_dir = f"{args.work_dir}/MADDPG-lstm-{run_name}"
     writer = SummaryWriter(log_dir)
@@ -446,7 +444,6 @@ if __name__ == "__main__":
                     b_done,
                     b_mask,
                 ) = rb.sample(args.batch_size)
-                ## train the critic
                 # Update the actor and critic
                 num_samples = b_mask.sum() * env.n_agents
                 ac_loss, cr_loss = 0, 0
@@ -455,6 +452,7 @@ if __name__ == "__main__":
                 h_targ = None
                 with torch.no_grad():
                     _, h_targ = target_actor.act(b_obs[:, :, :1].flatten(0, 1))
+                # Critic loss
                 for start in range(0, b_obs.size(2), args.tbptt):
                     end = start + args.tbptt
                     mb_next_obs = b_next_obs[:, :, start:end].flatten(0, 1)
@@ -472,10 +470,10 @@ if __name__ == "__main__":
                         actions_from_target_actor = actions_from_target_actor.reshape(
                             args.batch_size, env.n_agents, b_next_obs[:, :, start:end].size(2), -1
                         ).transpose(1, 2)
-                        qvals_from_taget_critic = target_critic(
+                        qvals_from_target_critic = target_critic(
                             mb_next_states, actions_from_target_actor.flatten(0, 1)
                         )
-                        targets = mb_reward + args.gamma * (1 - mb_done) * qvals_from_taget_critic
+                        targets = mb_reward + args.gamma * (1 - mb_done) * qvals_from_target_critic
                     q_values = critic(mb_states, mb_actions)
                     critic_loss = F.mse_loss(
                         targets[mb_mask].reshape(-1), q_values[mb_mask].reshape(-1), reduction="sum"
@@ -483,12 +481,11 @@ if __name__ == "__main__":
                     critic_loss /= num_samples
                     cr_loss += critic_loss.detach()
                     critic_loss.backward()
-
                 critic_gradient = norm_d([p.grad for p in critic.parameters()], 2)
                 if args.clip_gradients > 0:
                     torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=args.clip_gradients)
                 critic_optimizer.step()
-                ## Actor loss
+                # Actor loss
                 h = None
                 for start in range(0, b_obs.size(2), args.tbptt):
                     end = start + args.tbptt
@@ -578,7 +575,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()

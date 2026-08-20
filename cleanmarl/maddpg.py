@@ -25,13 +25,13 @@ class Args:
     env_family: str = "mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
@@ -51,7 +51,7 @@ class Args:
     minibatch_size: int = 6
     """ Mini Batch size"""
     train_freq: int = 1
-    """ Train the network each «train_freq» episodes in the environment"""
+    """ Train every train_freq episodes"""
     gamma: float = 0.99
     """ Discount factor"""
     optimizer: str = "Adam"
@@ -61,11 +61,11 @@ class Args:
     learning_rate_critic: float = 0.0003
     """ Learning rate for the critic"""
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     target_network_update_freq: int = 1
-    """ Update the target network each target_network_update_freq» step in the environment"""
+    """Update the target networks every target_network_update_freq episodes"""
     polyak: float = 0.005
-    """ Polyak coefficient when using polyak averaging for target network update"""
+    """ Polyak coefficient for target network update"""
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -78,9 +78,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Logging steps """
+    """ Number of completed episodes accumulated before logging """
     eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» steps"""
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -150,7 +150,7 @@ class ReplayBuffer:
 
 
 class Actor(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer, output_dim):
         super().__init__()
         self.output_dim = output_dim
         self.layers = nn.ModuleList()
@@ -173,7 +173,7 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim, num_agents) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer, output_dim, num_agents):
         super().__init__()
         self.num_agents = num_agents
         self.input_dim = input_dim
@@ -252,7 +252,7 @@ def make_env(args, kwargs, eval=False):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for VDN")
+            raise ValueError(f"{args.env_type} not supported for this MADDPG")
 
         env = RecordEpisodeStatistics(env)
         if not eval:
@@ -424,21 +424,21 @@ if __name__ == "__main__":
                 ac_loss, cr_loss = 0, 0
                 critic_optimizer.zero_grad()
                 actor_optimizer.zero_grad()
+                # Critic loss
                 for start in range(0, b_obs.size(0), args.minibatch_size):
                     end = start + args.minibatch_size
-                    ## Critic loss
                     with torch.no_grad():
                         actions_from_target_actor = target_actor.act(
                             b_next_obs[start:end],
                             avail_action=b_next_avail_actions[start:end],
                             hard=True,
                         )
-                        qvals_from_taget_critic = target_critic(
+                        qvals_from_target_critic = target_critic(
                             b_next_states[start:end], actions_from_target_actor
                         )
                         targets = (
                             b_reward[start:end].unsqueeze(1)
-                            + args.gamma * (1 - b_done[start:end].unsqueeze(1)) * qvals_from_taget_critic
+                            + args.gamma * (1 - b_done[start:end].unsqueeze(1)) * qvals_from_target_critic
                         )
                     q_values = critic(b_states[start:end], b_actions[start:end])
                     critic_loss = F.mse_loss(targets, q_values, reduction="sum") / num_samples
@@ -448,7 +448,7 @@ if __name__ == "__main__":
                 if args.clip_gradients > 0:
                     torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=args.clip_gradients)
                 critic_optimizer.step()
-                ## Actor loss
+                # Actor loss
                 for start in range(0, b_obs.size(0), args.minibatch_size):
                     end = start + args.minibatch_size
                     actions = actor.act(b_obs[start:end], avail_action=b_avail_actions[start:end], hard=True)
@@ -519,7 +519,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()
