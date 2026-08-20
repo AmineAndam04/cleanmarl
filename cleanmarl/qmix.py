@@ -25,13 +25,13 @@ class Args:
     env_family: str = "mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     hidden_dim: int = 64
     """ Hidden dimension"""
@@ -43,7 +43,7 @@ class Args:
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
     train_freq: int = 1
-    """ Train the network each «train_freq» step in the environment"""
+    """ Train every train_freq episodes"""
     buffer_size: int = 5000
     """ The number of episodes in the replay buffer"""
     batch_size: int = 10
@@ -57,17 +57,17 @@ class Args:
     learning_rate: float = 0.0005
     """ Learning rate"""
     target_network_update_freq: int = 1
-    """ Update the target network each target_network_update_freq» step in the environment"""
+    """Update the target networks every target_network_update_freq episodes"""
     polyak: float = 0.01
-    """ Polyak coefficient when using polyak averaging for target network update"""
+    """ Polyak coefficient for target network update"""
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     start_e: float = 1
     """ The starting value of epsilon, for exploration"""
     end_e: float = 0.025
     """ The end value of epsilon, for exploration"""
     exploration_fraction: float = 0.05
-    """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
+    """ Fraction of total_timesteps over which epsilon decreases from start_e to end_e"""
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -80,9 +80,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Log rollout stats every <log_every> episode """
+    """ Number of completed episodes accumulated before logging """
     eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» episode"""
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 5
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -94,7 +94,7 @@ class Args:
 
 
 class Qnetwrok(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer, output_dim):
         super().__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
@@ -160,7 +160,7 @@ class ReplayBuffer:
 
     def store(self, episode):
         for key, values in episode.items():
-            episode[key] = torch.from_numpy(np.stack(values)).to(self.device)
+            episode[key] = torch.from_numpy(np.stack(values))
         self.episodes[self.pos] = episode
         self.pos = (self.pos + 1) % self.buffer_size
         self.size = min(self.size + 1, self.buffer_size)
@@ -179,6 +179,7 @@ class ReplayBuffer:
         next_avail_actions = (
             torch.zeros(tot_length, self.num_agents, self.action_space).bool().to(self.device)
         )
+
         done = torch.zeros(tot_length).int().to(self.device)
         position = 0
         for episode, length in zip(batch, lengths):
@@ -191,17 +192,7 @@ class ReplayBuffer:
             next_avail_actions[position : position + length] = episode["avail_actions"][1:]
             done[position : position + length] = episode["done"]
             position += length
-        permutation = torch.randperm(tot_length).to(self.device)
-        return (
-            obs[permutation],
-            actions[permutation],
-            rewards[permutation],
-            next_obs[permutation],
-            states[permutation],
-            next_states[permutation],
-            next_avail_actions[permutation],
-            done[permutation],
-        )
+        return obs, actions, rewards, next_obs, states, next_states, next_avail_actions, done
 
 
 def make_env(args, kwargs, eval=False):
@@ -248,7 +239,7 @@ def make_env(args, kwargs, eval=False):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for VDN")
+            raise ValueError(f"{args.env_type} not supported for QMIX")
 
         env = RecordEpisodeStatistics(env)
         if not eval:
@@ -363,10 +354,9 @@ if __name__ == "__main__":
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
         ),
     )
-    ep_rewards, ep_lengths, ep_stats = [], [], []
+    step, num_episodes = 0, 0
     losses, gradients = [], []
-    num_episodes = 0
-    step = 0
+    ep_rewards, ep_lengths, ep_stats = [], [], []
     while step < args.total_timesteps:
         # ---- Collect an episode -------
         episode = {"obs": [], "actions": [], "reward": [], "states": [], "done": [], "avail_actions": []}
@@ -393,7 +383,7 @@ if __name__ == "__main__":
             episode["obs"].append(obs)
             episode["actions"].append(actions)
             episode["reward"].append(reward)
-            episode["done"].append(done)
+            episode["done"].append(done or truncated)
             episode["avail_actions"].append(avail_action)
             episode["states"].append(state)
             obs = next_obs
@@ -424,6 +414,9 @@ if __name__ == "__main__":
                     b_done,
                 ) = rb.sample(args.batch_size)
                 # Train the networks
+                num_samples = b_obs.size(0)
+                optimizer.zero_grad()
+                loss = 0
                 for start in range(0, b_obs.size(0), args.minibatch_size):
                     end = start + args.minibatch_size
                     with torch.no_grad():
@@ -438,18 +431,19 @@ if __name__ == "__main__":
                     )
                     q_values = q_values.reshape(-1, env.n_agents)
                     q_tot = mixer(Q=q_values, s=b_states[start:end]).reshape(-1)
-                    loss = F.mse_loss(targets, q_tot)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    grads = [p.grad for p in list(utility_network.parameters()) + list(mixer.parameters())]
-                    qmix_gradient = norm_d(grads, 2)
-                    if args.clip_gradients > 0:
-                        torch.nn.utils.clip_grad_norm_(
-                            list(utility_network.parameters()) + list(mixer.parameters()), args.clip_gradients
-                        )
-                    optimizer.step()
-                    losses.append(loss.item())
-                    gradients.append(qmix_gradient.item())
+                    mb_loss = F.mse_loss(targets, q_tot, reduction="sum")
+                    mb_loss /= num_samples
+                    loss += mb_loss.detach()
+                    mb_loss.backward()
+                grads = [p.grad for p in list(utility_network.parameters()) + list(mixer.parameters())]
+                qmix_gradient = norm_d(grads, 2)
+                if args.clip_gradients > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        list(utility_network.parameters()) + list(mixer.parameters()), args.clip_gradients
+                    )
+                optimizer.step()
+                losses.append(loss.item())
+                gradients.append(qmix_gradient.item())
             # Update target networks
             if num_episodes % args.target_network_update_freq == 0:
                 soft_update(target_net=target_network, utility_net=utility_network, polyak=args.polyak)
@@ -502,7 +496,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()
