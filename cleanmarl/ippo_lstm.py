@@ -25,18 +25,16 @@ class Args:
     env_family: str = "mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """ Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     actor_hidden_dim: int = 32
     """ Hidden dimension of actor network"""
-    actor_num_layers: int = 1
-    """ Number of hidden layers of actor network"""
     critic_hidden_dim: int = 32
     """ Hidden dimension of critic network"""
     critic_num_layers: int = 1
@@ -47,7 +45,7 @@ class Args:
     n_episodes: int = 3
     """ Number of episodes to collect in each rollout"""
     tbptt: int = 10
-    """Chunck size for Truncated Backpropagation Through Time tbptt"""
+    """ Chunk size for Truncated Backpropagation Through Time tbptt"""
     optimizer: str = "Adam"
     """ The optimizer"""
     learning_rate_actor: float = 0.0008
@@ -63,13 +61,13 @@ class Args:
     gamma: float = 0.99
     """ Discount factor"""
     td_lambda: float = 0.95
-    """ TD(λ) discount factor"""
+    """ TD(λ) parameter"""
     normalize_advantage: bool = False
     """ Normalize the advantage if True"""
     normalize_return: bool = False
     """ Normalize the returns if True"""
     clip_gradients: float = -1
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -82,9 +80,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Logging steps """
-    eval_steps: int = 50
-    """ Evaluate the policy each «eval_steps» training steps"""
+    """ Number of completed episodes accumulated before logging """
+    eval_steps: int = 10
+    """ Evaluate the policy every eval_steps episodes"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -226,7 +224,7 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer):
         super().__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
@@ -284,7 +282,7 @@ def make_env(args, kwargs, eval=False):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for this COMA")
+            raise ValueError(f"{args.env_type} not supported for this IPPO")
 
         env = RecordEpisodeStatistics(env)
         if not eval:
@@ -389,11 +387,11 @@ if __name__ == "__main__":
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
         ),
     )
-    ep_rewards, ep_lengths, ep_stats = [], [], []
-    ac_losses, cr_losses, entropies = [], [], []
-    ac_gradients, cr_gradients = [], []
-    kl_divs, clipped_ratios = [], []
     step, num_episodes = 0, 0
+    kl_divs, clipped_ratios = [], []
+    ac_gradients, cr_gradients = [], []
+    ac_losses, cr_losses, entropies = [], [], []
+    ep_rewards, ep_lengths, ep_stats = [], [], []
     while step < args.total_timesteps:
         # ---- Collect some episodes ------
         num_episode = 0
@@ -429,7 +427,6 @@ if __name__ == "__main__":
                 episode["avail_actions"].append(avail_action)
                 episode["values"].append(values.cpu())
                 obs = next_obs
-
             rb.add(episode)
             num_episode += 1
             ep_rewards.append(infos["episode_stats"]["r"])
@@ -456,13 +453,11 @@ if __name__ == "__main__":
                 )
                 log_ratio = current_logprob - b_log_probs[:, start:end]
                 ratio = torch.exp(log_ratio)
-                ## Compute PG the loss
                 pg_loss1 = b_advantages[:, start:end] * ratio
                 pg_loss2 = b_advantages[:, start:end] * torch.clamp(
                     ratio, 1 - args.ppo_clip, 1 + args.ppo_clip
                 )
                 pg_loss = torch.min(pg_loss1[b_mask[:, start:end]], pg_loss2[b_mask[:, start:end]]).sum()
-                # Compute entropy bonus
                 entropy_loss = entropy_loss[b_mask[:, start:end]].sum()
                 actor_loss = -pg_loss - args.entropy_coef * entropy_loss
                 actor_loss /= num_samples
@@ -470,7 +465,7 @@ if __name__ == "__main__":
                 ac_loss += actor_loss.detach()
                 entropy += (entropy_loss / num_samples).detach()
                 h = (h[0].detach(), h[1].detach())
-                # Compute the value loss
+                # Critic loss
                 current_values = critic(x=b_obs[:, start:end])
                 critic_loss = F.mse_loss(
                     current_values[b_mask[:, start:end]],
@@ -499,10 +494,9 @@ if __name__ == "__main__":
             entropies.append(entropy.item())
             ac_losses.append(ac_loss.item())
             ac_gradients.append(actor_gradient.item())
-            ac_gradients.append(actor_gradient.item())
             clipped_ratios.append(clipped_ratio.cpu())
             kl_divs.append(kl_div.item())
-        ## logging
+        # logging
         if len(ep_rewards) >= args.log_every:
             writer.add_scalar("rollout/ep_reward", np.mean(ep_rewards), step)
             writer.add_scalar("rollout/ep_length", np.mean(ep_lengths), step)
@@ -561,7 +555,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()
