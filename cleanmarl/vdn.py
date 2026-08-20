@@ -25,13 +25,13 @@ class Args:
     env_family: str = "mpe"
     """ Env family when using pz"""
     agent_ids: bool = True
-    """ Include id (one-hot vector) at the agent of the observations"""
+    """Append the agent ID (one-hot vector) to each observation"""
     normalize_obs: bool = False
-    """ NNormalize the observations if True"""
+    """ Normalize the observations if True"""
     normalize_reward: bool = False
     """ Normalize the rewards if True"""
     max_episode_steps: int = 150
-    "Maximum steps per episode"
+    """ Maximum steps per episode"""
     # Network
     hidden_dim: int = 64
     """ Hidden dimension"""
@@ -41,7 +41,7 @@ class Args:
     total_timesteps: int = 1000000
     """ Total steps in the environment during training"""
     train_freq: int = 5
-    """ Train the network each «train_freq» step in the environment"""
+    """ Train the network every train_freq environment steps"""
     buffer_size: int = 10000
     """ The size of the replay buffer"""
     batch_size: int = 32
@@ -55,17 +55,17 @@ class Args:
     learning_rate: float = 0.0005
     """ Learning rate"""
     target_network_update_freq: int = 5
-    """ Update the target network each target_network_update_freq» step in the environment"""
+    """ Update the target network every target_network_update_freq step in the environment"""
     polyak: float = 0.005
-    """ Polyak coefficient when using polyak averaging for target network update"""
+    """ Polyak coefficient for target network update"""
     clip_gradients: float = 5
-    """ 0< for no clipping and 0> if clipping at clip_gradients"""
+    """ Disable gradient clipping when <= 0; otherwise clip at this value"""
     start_e: float = 1
     """ The starting value of epsilon, for exploration"""
     end_e: float = 0.05
     """ The end value of epsilon, for exploration"""
     exploration_fraction: float = 0.05
-    """ The fraction of «total-timesteps» it takes from to go from start_e to  end_e"""
+    """ Fraction of total_timesteps over which epsilon decreases from start_e to end_e"""
     device: str = "cpu"
     """ Device (cpu, cuda, mps)"""
     seed: int = 1
@@ -78,9 +78,9 @@ class Args:
     exp_name: str = "v1"
     """ Used for logging"""
     log_every: int = 10
-    """ Log rollout stats every <log_every> episode """
+    """ Number of completed episodes accumulated before logging """
     eval_steps: int = 5000
-    """ Evaluate the policy each «eval_steps» steps"""
+    """ Evaluate the policy each eval_steps steps"""
     num_eval_ep: int = 10
     """ Number of evaluation episodes"""
     use_wnb: bool = False
@@ -92,7 +92,7 @@ class Args:
 
 
 class Qnetwrok(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layer, output_dim) -> None:
+    def __init__(self, input_dim, hidden_dim, num_layer, output_dim):
         super().__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU()))
@@ -194,7 +194,7 @@ def make_env(args, kwargs, eval=False):
                 max_episode_steps=args.max_episode_steps,
             )
         else:
-            raise ValueError(f"{args.env_type} nor supported for VDN")
+            raise ValueError(f"{args.env_type} not supported for VDN")
 
         env = RecordEpisodeStatistics(env)
         if not eval:
@@ -259,6 +259,8 @@ if __name__ == "__main__":
         eval_env.set_wrapper_attr("obs_rms", env.get_wrapper_attr("obs_rms"))
     if args.agent_ids:
         eval_env = AddAgentIDVec(eval_env)
+    env.reset(seed=seed)
+    eval_env.reset(seed=seed + 100)
     # Initialize the utility and target networks
     utility_network = Qnetwrok(
         input_dim=env.get_obs_size(),
@@ -270,7 +272,7 @@ if __name__ == "__main__":
     # Initialize the optimizer
     optimizer = getattr(optim, args.optimizer)
     optimizer = optimizer(utility_network.parameters(), lr=args.learning_rate)
-    # Initialize a shared replay buffer
+    # Initialize the replay buffer
     rb = ReplayBuffer(
         buffer_size=args.buffer_size,
         obs_space=env.get_obs_size(),
@@ -299,14 +301,12 @@ if __name__ == "__main__":
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])
         ),
     )
-
     obs, _ = env.reset(seed=seed)
-    eval_env.reset(seed=seed + 100)
     avail_action = env.get_avail_actions()
     ep_rewards, ep_lengths, ep_stats = [], [], []
     losses, gradients = [], []
     for step in range(args.total_timesteps):
-        # ---- Step the environment -------
+        # ---- Collect transitions -------
         # select actions
         epsilon = linear_schedule(
             args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, step
@@ -325,7 +325,7 @@ if __name__ == "__main__":
         # We need the next_avail_action to compute the target loss : max of Q(next_state)
         next_avail_action = env.get_avail_actions()
         # Store the step
-        rb.store(obs, actions, reward, done, next_obs, next_avail_action)
+        rb.store(obs, actions, reward, done or truncated, next_obs, next_avail_action)
         obs = next_obs
         avail_action = next_avail_action
         if done or truncated:
@@ -339,21 +339,14 @@ if __name__ == "__main__":
         if step > args.learning_starts:
             if step % args.train_freq == 0:
                 # Sample a batch of steps
-                (
-                    batch_obs,
-                    batch_action,
-                    batch_reward,
-                    batch_next_obs,
-                    batch_next_avail_action,
-                    batch_done,
-                ) = rb.sample(args.batch_size)
+                b_obs, b_action, b_reward, b_next_obs, b_next_avail_action, b_done = rb.sample(
+                    args.batch_size
+                )
                 with torch.no_grad():
-                    q_next_max, _ = target_network(batch_next_obs, avail_action=batch_next_avail_action).max(
-                        dim=-1
-                    )
+                    q_next_max, _ = target_network(b_next_obs, avail_action=b_next_avail_action).max(dim=-1)
                     vdn_q_max = q_next_max.sum(dim=-1)
-                    targets = batch_reward + args.gamma * (1 - batch_done) * vdn_q_max
-                q_values = torch.gather(utility_network(batch_obs), dim=-1, index=batch_action.unsqueeze(-1))
+                    targets = b_reward + args.gamma * (1 - b_done) * vdn_q_max
+                q_values = torch.gather(utility_network(b_obs), dim=-1, index=b_action.unsqueeze(-1))
                 q_values = q_values.reshape_as(q_next_max)
                 vdn_q_values = q_values.sum(dim=-1)
                 loss = F.mse_loss(targets, vdn_q_values)
@@ -417,7 +410,7 @@ if __name__ == "__main__":
         torch.save(checkpoint, f"{log_dir}/agent.pt")
         with open(f"{log_dir}/args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
-    # ---- Close loggings and envs -------
+    # ---- Close loggers and environments -------
     writer.close()
     if args.use_wnb:
         wandb.finish()
