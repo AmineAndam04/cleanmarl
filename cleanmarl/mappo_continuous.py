@@ -251,7 +251,7 @@ def make_env(args, kwargs):
                 env_name=args.env_name, max_episode_steps=args.max_episode_steps, **kwargs
             )
         else:
-            raise ValueError(f"{args.env_type} not supported for VDN")
+            raise ValueError(f"{args.env_type} not supported")
 
         return RecordEpisodeStatistics(env)
 
