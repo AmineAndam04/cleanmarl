@@ -16,15 +16,6 @@ todo.txt
 /testing
 uv.lock
 # temp
-cleanmarl/env/smax_vec_wrapper.py
-cleanmarl/env/smax_wrapper.py
-cleanmarl/mappo_smax.py
-cleanmarl/vdn_jaxenvs.py
-cleanmarl/mappo_continous_actions.py
-cleanmarl/mappo_continuous_lstm.py
-cleanmarl/env/utils.py
-cleanmarl/env/mamujoco_wraper.py
-cleanmarl/coma_lbf.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -179,9 +170,9 @@ activemq-data/
 .env
 .envrc
 .venv
-env/
-venv/
-ENV/
+# env/
+# venv/
+# ENV/
 env.bak/
 venv.bak/
 
