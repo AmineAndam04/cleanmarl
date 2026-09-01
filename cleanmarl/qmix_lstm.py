@@ -117,16 +117,22 @@ class Qnetwrok(nn.Module):
         return x, h
 
 
+def layer_init(layer, std=0.1, bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
+
+
 class MixingNetwork(nn.Module):
     def __init__(self, n_agents, s_dim, hidden_dim):
         super().__init__()
         self.n_agents = n_agents
         self.hidden_dim = hidden_dim
-        self.hypernet_weight_1 = nn.Linear(s_dim, n_agents * hidden_dim)
-        self.hypernet_bias_1 = nn.Linear(s_dim, hidden_dim)
-        self.hypernet_weight_2 = nn.Linear(s_dim, hidden_dim)
+        self.hypernet_weight_1 = layer_init(nn.Linear(s_dim, n_agents * hidden_dim))
+        self.hypernet_bias_1 = layer_init(nn.Linear(s_dim, hidden_dim))
+        self.hypernet_weight_2 = layer_init(nn.Linear(s_dim, hidden_dim))
         self.hypernet_bias_2 = nn.Sequential(
-            nn.Linear(s_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1)
+            layer_init(nn.Linear(s_dim, hidden_dim)), nn.ReLU(), layer_init(nn.Linear(hidden_dim, 1))
         )
 
     def forward(self, Q, s):
@@ -390,7 +396,7 @@ if __name__ == "__main__":
                 q_values, h = utility_network(
                     torch.from_numpy(obs).float().to(device),
                     h=h,
-                    avail_action=torch.from_numpy(avail_action).bool().to(device),
+                    avail_action=torch.from_numpy(avail_action).to(device),
                 )
                 q_values = q_values.squeeze(1)
             actions = q_values.argmax(dim=-1).cpu().numpy()
@@ -509,10 +515,7 @@ if __name__ == "__main__":
                     q_values, h_eval = utility_network(
                         torch.from_numpy(eval_obs).float().flatten(0, 1).to(device),
                         h=h_eval,
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
-                        .bool()
-                        .flatten(0, 1)
-                        .to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).flatten(0, 1).to(device),
                     )
                 actions = (
                     q_values.reshape(args.num_eval_ep, eval_env.n_agents, -1).argmax(dim=-1).cpu().numpy()

@@ -166,6 +166,7 @@ class ReplayBuffer:
         self.size = min(self.size + 1, self.buffer_size)
 
     def sample(self, batch_size):
+        # self.memory_usage()
         indices = np.random.choice(self.size, size=batch_size, replace=False)
         batch = [self.episodes[i] for i in indices]
         lengths = [len(episode["obs"]) - 1 for episode in batch]
@@ -179,8 +180,8 @@ class ReplayBuffer:
         next_avail_actions = (
             torch.zeros(tot_length, self.num_agents, self.action_space).bool().to(self.device)
         )
-
         done = torch.zeros(tot_length).int().to(self.device)
+
         position = 0
         for episode, length in zip(batch, lengths):
             obs[position : position + length] = episode["obs"][:-1]
@@ -192,6 +193,7 @@ class ReplayBuffer:
             next_avail_actions[position : position + length] = episode["avail_actions"][1:]
             done[position : position + length] = episode["done"]
             position += length
+
         return obs, actions, rewards, next_obs, states, next_states, next_avail_actions, done
 
 
@@ -371,7 +373,7 @@ if __name__ == "__main__":
             with torch.no_grad():
                 q_values = utility_network(
                     x=torch.from_numpy(obs).float().to(device),
-                    avail_action=torch.from_numpy(avail_action).bool().to(device),
+                    avail_action=torch.from_numpy(avail_action).to(device),
                 )
             actions = q_values.argmax(dim=-1).cpu().numpy()
             explore = np.random.random(actions.shape) < epsilon
@@ -469,7 +471,7 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     q_values = utility_network(
                         x=torch.from_numpy(eval_obs).float().to(device),
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).to(device),
                     )
                 actions = q_values.argmax(dim=-1).cpu().numpy()
                 eval_obs, reward, done, truncated, infos = eval_env.step(actions)

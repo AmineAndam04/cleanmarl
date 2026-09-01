@@ -409,7 +409,7 @@ if __name__ == "__main__":
                 actions, log_probs, h = actor.act(
                     torch.from_numpy(obs).float().flatten(0, 1).to(device),
                     h=h,
-                    avail_action=torch.tensor(avail_action).flatten(0, 1).bool().to(device),
+                    avail_action=torch.tensor(avail_action).flatten(0, 1).to(device),
                 )
                 values = critic(torch.from_numpy(obs).float().to(device)).cpu()
                 actions = actions.reshape(args.n_episodes, envs.n_agents).cpu().numpy()
@@ -524,10 +524,7 @@ if __name__ == "__main__":
                     logits, h_eval = actor.logits(
                         torch.from_numpy(eval_obs).float().flatten(0, 1).to(device),
                         h=h_eval,
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
-                        .bool()
-                        .flatten(0, 1)
-                        .to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).flatten(0, 1).to(device),
                     )
                     actions = logits.reshape(args.num_eval_ep, eval_env.n_agents, -1).argmax(-1).cpu().numpy()
                 eval_obs, reward, done, truncated, infos = eval_env.step(actions)

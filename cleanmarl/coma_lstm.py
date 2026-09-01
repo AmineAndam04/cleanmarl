@@ -451,7 +451,7 @@ if __name__ == "__main__":
                         torch.from_numpy(obs).float().to(device),
                         h=h,
                         eps=epsilon,
-                        avail_action=torch.from_numpy(avail_action).bool().to(device),
+                        avail_action=torch.from_numpy(avail_action).to(device),
                     )
                     actions = actions.reshape(env.n_agents)
                     # Compute its value
@@ -459,7 +459,7 @@ if __name__ == "__main__":
                         state=torch.from_numpy(state).float().to(device),
                         observations=torch.from_numpy(obs).float().to(device),
                         actions=actions,
-                        avail_actions=torch.from_numpy(avail_action).bool().to(device),
+                        avail_actions=torch.from_numpy(avail_action).to(device),
                     )
                     value = torch.gather(values, dim=-1, index=actions.unsqueeze(-1)).squeeze(-1)
                 next_obs, reward, done, truncated, infos = env.step(actions.cpu().numpy())
@@ -579,10 +579,7 @@ if __name__ == "__main__":
                     logits, h_eval = actor.logits(
                         torch.from_numpy(eval_obs).float().flatten(0, 1).to(device),
                         h=h_eval,
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
-                        .bool()
-                        .flatten(0, 1)
-                        .to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).flatten(0, 1).to(device),
                     )
                     actions = logits.reshape(args.num_eval_ep, eval_env.n_agents, -1).argmax(-1).cpu().numpy()
                 eval_obs, reward, done, truncated, infos = eval_env.step(actions)

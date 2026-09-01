@@ -165,6 +165,7 @@ class ReplayBuffer:
             next_avail_actions[i, :length] = batch[i]["avail_actions"][1:]
             done[i, :length] = batch[i]["done"]
             mask[i, :length] = 1
+
         return (
             obs.permute(0, 2, 1, 3),
             actions.permute(0, 2, 1),
@@ -343,7 +344,7 @@ if __name__ == "__main__":
                 q_values, h = utility_network(
                     torch.from_numpy(obs).float().to(device),
                     h=h,
-                    avail_action=torch.from_numpy(avail_action).bool().to(device),
+                    avail_action=torch.from_numpy(avail_action).to(device),
                 )
                 q_values = q_values.squeeze(1)
             actions = q_values.argmax(dim=-1).cpu().numpy()
@@ -450,10 +451,7 @@ if __name__ == "__main__":
                     q_values, h_eval = utility_network(
                         torch.from_numpy(eval_obs).float().flatten(0, 1).to(device),
                         h=h_eval,
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
-                        .bool()
-                        .flatten(0, 1)
-                        .to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).flatten(0, 1).to(device),
                     )
                 actions = (
                     q_values.reshape(args.num_eval_ep, eval_env.n_agents, -1).argmax(dim=-1).cpu().numpy()

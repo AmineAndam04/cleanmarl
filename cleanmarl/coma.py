@@ -435,14 +435,14 @@ if __name__ == "__main__":
                     actions = actor.act(
                         torch.from_numpy(obs).float().to(device),
                         eps=epsilon,
-                        avail_action=torch.from_numpy(avail_action).bool().to(device),
+                        avail_action=torch.from_numpy(avail_action).to(device),
                     )
                     # Compute its value
                     values = target_critic(
                         state=torch.from_numpy(state).float().to(device),
                         observations=torch.from_numpy(obs).float().to(device),
                         actions=actions,
-                        avail_actions=torch.from_numpy(avail_action).bool().to(device),
+                        avail_actions=torch.from_numpy(avail_action).to(device),
                     )
                     value = torch.gather(values, dim=-1, index=actions.unsqueeze(-1)).squeeze(-1)
                 # Step the environment
@@ -543,7 +543,7 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     logits = actor.logits(
                         torch.from_numpy(eval_obs).float().to(device),
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).to(device),
                     )
                     actions = logits.argmax(-1).cpu().numpy()
                 eval_obs, reward, done, truncated, infos = eval_env.step(actions)

@@ -404,7 +404,7 @@ if __name__ == "__main__":
                 actions, h = actor.act(
                     torch.from_numpy(obs).float().to(device),
                     h,
-                    avail_action=torch.from_numpy(avail_action).bool().to(device),
+                    avail_action=torch.from_numpy(avail_action).to(device),
                     hard=True,
                 )  ## These are one hot-vectors
                 actions = actions.squeeze(1)
@@ -545,10 +545,7 @@ if __name__ == "__main__":
                     logits, h_eval = actor.logits(
                         torch.from_numpy(eval_obs).float().flatten(0, 1).to(device),
                         h=h_eval,
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions())
-                        .bool()
-                        .flatten(0, 1)
-                        .to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).flatten(0, 1).to(device),
                     )
                     actions = logits.reshape(args.num_eval_ep, eval_env.n_agents, -1).argmax(-1).cpu().numpy()
                 eval_obs, reward, done, truncated, infos = eval_env.step(actions)

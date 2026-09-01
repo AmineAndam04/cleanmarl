@@ -136,20 +136,10 @@ class ReplayBuffer:
         self.episodes = [None] * buffer_size
         self.pos = 0
         self.size = 0
-        ## OOM Memory issues
-        self.store_type = {
-            "obs": torch.float32,
-            "actions": torch.int64,
-            "reward": torch.float32,
-            "done": torch.bool,
-            "avail_actions": torch.bool,
-        }
 
     def store(self, episode):
         for key, values in episode.items():
-            vals = torch.from_numpy(np.stack(values))
-            vals = vals.to(self.store_type[key])
-            episode[key] = vals
+            episode[key] = torch.from_numpy(np.stack(values))
         self.episodes[self.pos] = episode
         self.pos = (self.pos + 1) % self.buffer_size
         self.size = min(self.size + 1, self.buffer_size)
@@ -166,8 +156,8 @@ class ReplayBuffer:
         next_avail_actions = (
             torch.zeros(tot_length, self.num_agents, self.action_space).bool().to(self.device)
         )
-
         done = torch.zeros(tot_length).int().to(self.device)
+
         position = 0
         for episode, length in zip(batch, lengths):
             obs[position : position + length] = episode["obs"][:-1]
@@ -177,6 +167,7 @@ class ReplayBuffer:
             next_avail_actions[position : position + length] = episode["avail_actions"][1:]
             done[position : position + length] = episode["done"]
             position += length
+
         return obs, actions, rewards, next_obs, next_avail_actions, done
 
 
@@ -341,7 +332,7 @@ if __name__ == "__main__":
             with torch.no_grad():
                 q_values = utility_network(
                     torch.from_numpy(obs).float().to(device),
-                    torch.from_numpy(avail_action).bool().to(device),
+                    torch.from_numpy(avail_action).to(device),
                 )
             actions = q_values.argmax(dim=-1).cpu().numpy()
             explore = np.random.random(actions.shape) < epsilon
@@ -430,7 +421,7 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     q_values = utility_network(
                         x=torch.from_numpy(eval_obs).float().to(device),
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).to(device),
                     )
                 actions = q_values.argmax(dim=-1).cpu().numpy()
                 eval_obs, reward, done, truncated, infos = eval_env.step(actions)

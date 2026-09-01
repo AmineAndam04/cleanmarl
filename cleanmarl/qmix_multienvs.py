@@ -376,7 +376,7 @@ if __name__ == "__main__":
             with torch.no_grad():
                 q_values = utility_network(
                     torch.from_numpy(obs).float().to(device),
-                    torch.from_numpy(avail_action).bool().to(device),
+                    torch.from_numpy(avail_action).to(device),
                 )
             actions = q_values.argmax(dim=-1).cpu().numpy()
             explore = np.random.random(actions.shape) < epsilon
@@ -479,7 +479,7 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     q_values = utility_network(
                         x=torch.from_numpy(eval_obs).float().to(device),
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).to(device),
                     )
                 actions = q_values.argmax(dim=-1).cpu().numpy()
                 eval_obs, reward, done, truncated, infos = eval_env.step(actions)

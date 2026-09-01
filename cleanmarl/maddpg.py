@@ -380,7 +380,7 @@ if __name__ == "__main__":
             with torch.no_grad():
                 actions = actor.act(
                     torch.from_numpy(obs).float().to(device),
-                    avail_action=torch.from_numpy(avail_action).bool().to(device),
+                    avail_action=torch.from_numpy(avail_action).to(device),
                     hard=True,
                 ).cpu()  ## These are one hot-vectors
                 actions_to_take = torch.argmax(actions, dim=-1).numpy()
@@ -492,7 +492,7 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     logits = actor.logits(
                         torch.from_numpy(eval_obs).float().to(device),
-                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).bool().to(device),
+                        avail_action=torch.from_numpy(eval_env.get_avail_actions()).to(device),
                     )
                     actions = logits.argmax(-1).cpu().numpy()
                 eval_obs, reward, done, truncated, infos = eval_env.step(actions)
